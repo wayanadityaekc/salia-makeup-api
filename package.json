@@ -1,0 +1,19 @@
+{
+  "name": "salia-makeup-api",
+  "version": "1.0.0",
+  "description": "Booking API for Salia Makeup (Express + Postgres). No payments, no server-side WhatsApp.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tools/check-exports.js && node tools/pricing-spec-test.js && node tools/booking-flow-test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+  }
+}
