@@ -70,6 +70,8 @@ async function ensureSchema() {
       CONSTRAINT settings_singleton CHECK (id = 1)
     )
   `);
+  // Added after the table shipped — idempotent so existing DBs get the column.
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS whatsapp TEXT`);
 
   await seedServices();
 }

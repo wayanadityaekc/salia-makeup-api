@@ -14,6 +14,7 @@ const DEFAULTS = {
   instagram_url: "",
   tiktok_url: "",
   google_url: "",
+  whatsapp: "",
 };
 
 // Read the singleton row, creating it from defaults on first call.
@@ -33,6 +34,7 @@ async function getSettings() {
     bank: { name: r.bank_name || "", number: r.bank_number || "", holder: r.bank_holder || "" },
     areas: Array.isArray(r.areas) ? r.areas : DEFAULTS.areas,
     social: { instagram: r.instagram_url || "", tiktok: r.tiktok_url || "", google: r.google_url || "" },
+    whatsapp: r.whatsapp || "",
   };
 }
 
@@ -47,11 +49,12 @@ async function updateSettings(body) {
   const areas = Array.isArray(body.areas)
     ? body.areas.map((a) => ({ id: a.id, nama: a.nama, fee: Math.max(0, parseInt(a.fee, 10) || 0) }))
     : cur.areas;
+  const whatsapp = body.whatsapp !== undefined ? String(body.whatsapp) : cur.whatsapp;
 
   await pool.query(
     `UPDATE settings SET dp_percent=$1, bank_name=$2, bank_number=$3, bank_holder=$4,
-       areas=$5, instagram_url=$6, tiktok_url=$7, google_url=$8, updated_at=NOW() WHERE id=1`,
-    [dpPercent, bank.name, bank.number, bank.holder, JSON.stringify(areas), social.instagram, social.tiktok, social.google],
+       areas=$5, instagram_url=$6, tiktok_url=$7, google_url=$8, whatsapp=$9, updated_at=NOW() WHERE id=1`,
+    [dpPercent, bank.name, bank.number, bank.holder, JSON.stringify(areas), social.instagram, social.tiktok, social.google, whatsapp],
   );
   return getSettings();
 }

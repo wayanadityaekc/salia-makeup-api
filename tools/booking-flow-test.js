@@ -26,7 +26,7 @@ const services = pricing.SEED_SERVICES.map((s) => ({
 // settings singleton
 let settingsRow = {
   id: 1, dp_percent: 50, bank_name: null, bank_number: null, bank_holder: null,
-  areas: pricing.areas, instagram_url: null, tiktok_url: null, google_url: null,
+  areas: pricing.areas, instagram_url: null, tiktok_url: null, google_url: null, whatsapp: null,
 };
 
 db.ensureSchema = async () => {};
@@ -37,10 +37,10 @@ db.pool.query = async (text, params = []) => {
   if (sql.startsWith("SELECT * FROM settings")) return { rows: [settingsRow], rowCount: 1 };
   if (sql.startsWith("INSERT INTO settings")) return { rows: [settingsRow], rowCount: 1 };
   if (sql.startsWith("UPDATE settings SET")) {
-    const [dp, bn, bnum, bh, areasJson, ig, tt, gg] = params;
+    const [dp, bn, bnum, bh, areasJson, ig, tt, gg, wa] = params;
     settingsRow = {
       ...settingsRow, dp_percent: dp, bank_name: bn, bank_number: bnum, bank_holder: bh,
-      areas: JSON.parse(areasJson), instagram_url: ig, tiktok_url: tt, google_url: gg,
+      areas: JSON.parse(areasJson), instagram_url: ig, tiktok_url: tt, google_url: gg, whatsapp: wa,
     };
     return { rows: [settingsRow], rowCount: 1 };
   }
@@ -209,11 +209,12 @@ async function main() {
   ok("settings public read", st.json?.dpPercent === 50 && Array.isArray(st.json?.areas));
   ok("settings has bank shape", st.json?.bank && "number" in st.json.bank);
   ok("settings patch needs auth", (await req("PATCH", "/settings", { body: { dpPercent: 30 } })).status === 401);
-  const upd = await req("PATCH", "/settings", { token, body: { dpPercent: 40, bank: { number: "123-456", name: "BCA", holder: "Salia" }, areas: [{ id: "dalam-kota", nama: "Dalam kota", fee: 0 }, { id: "luar-jauh", nama: "Luar", fee: 75000 }], social: { instagram: "https://instagram.com/x" } } });
+  const upd = await req("PATCH", "/settings", { token, body: { dpPercent: 40, bank: { number: "123-456", name: "BCA", holder: "Salia" }, areas: [{ id: "dalam-kota", nama: "Dalam kota", fee: 0 }, { id: "luar-jauh", nama: "Luar", fee: 75000 }], social: { instagram: "https://instagram.com/x" }, whatsapp: "628111" } });
   ok("settings patch applies dp", upd.json?.dpPercent === 40);
   ok("settings patch applies bank", upd.json?.bank?.number === "123-456");
   ok("settings patch applies area fee", upd.json?.areas?.find((a) => a.id === "luar-jauh")?.fee === 75000);
   ok("settings patch applies social", upd.json?.social?.instagram === "https://instagram.com/x");
+  ok("settings patch applies whatsapp", upd.json?.whatsapp === "628111");
   // booking now uses the owner-set ongkir (75000 for luar-jauh)
   const bk2 = await req("POST", "/bookings", { body: { nama: "B", telepon: "08", service_id: "makeup", area_id: "luar-jauh", tanggal: "2026-10-05", jam: "09:00" } });
   ok("booking uses settings ongkir", bk2.json?.total === 150000 + 75000);
