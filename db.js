@@ -1,15 +1,14 @@
 // PostgreSQL access + schema bootstrap. One pool for the process.
 const { Pool } = require("pg");
+const pricing = require("./pricing");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Railway/most managed Postgres present a cert the container does not have in
-  // its trust store; this is the same setting cahyana-api uses.
   ssl: process.env.PGSSL === "off" ? false : { rejectUnauthorized: false },
 });
 
-// Idempotent: safe to run on every boot. Creates the bookings table if missing.
-// No DROP anywhere — losing a booking loses a real customer.
+// Idempotent: safe to run on every boot. Creates tables if missing, seeds the
+// service list once. No DROP anywhere — losing a booking loses a real customer.
 async function ensureSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS bookings (
@@ -30,6 +29,48 @@ async function ensureSchema() {
       created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS services (
+      id              TEXT PRIMARY KEY,
+      kind            TEXT NOT NULL,            -- 'makeup' | 'nail'
+      nama            TEXT NOT NULL,
+      ringkas         TEXT,
+      base            INTEGER NOT NULL DEFAULT 0,
+      hairdo_included BOOLEAN,                  -- null for nail art
+      foto            TEXT,
+      sort            INTEGER NOT NULL DEFAULT 0,
+      active          BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS gallery (
+      id         SERIAL PRIMARY KEY,
+      url        TEXT NOT NULL,
+      caption    TEXT,
+      sort       INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await seedServices();
 }
 
-module.exports = { pool, ensureSchema };
+// Populate the services table from the seed ONLY when it's empty — never
+// overwrites what the owner has since edited.
+async function seedServices() {
+  const { rows } = await pool.query("SELECT COUNT(*)::int AS n FROM services");
+  if (rows[0].n > 0) return;
+  for (const s of pricing.SEED_SERVICES) {
+    await pool.query(
+      `INSERT INTO services (id, kind, nama, ringkas, base, hairdo_included, sort, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
+       ON CONFLICT (id) DO NOTHING`,
+      [s.id, s.kind, s.nama, s.ringkas, s.base, s.hairdo_included, s.sort],
+    );
+  }
+}
+
+module.exports = { pool, ensureSchema, seedServices };
