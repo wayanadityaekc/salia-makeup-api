@@ -7,6 +7,7 @@ const multer = require("multer");
 const { pool, ensureSchema } = require("./db");
 const pricing = require("./pricing");
 const uploads = require("./uploads");
+const settings = require("./settings");
 const { passwordMatches, signToken, requireAuth } = require("./auth");
 
 const app = express();
@@ -61,6 +62,26 @@ const KINDS = ["makeup", "nail"];
 // ---- Health -----------------------------------------------------------------
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// ---- Settings ---------------------------------------------------------------
+// GET /settings (public) — DP %, bank account, area fees (ongkir), social links.
+// All of this is meant to be shown on the site, so no auth on the read.
+app.get("/settings", async (_req, res) => {
+  try {
+    res.json(await settings.getSettings());
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// PATCH /settings (admin)
+app.patch("/settings", requireAuth, async (req, res) => {
+  try {
+    res.json(await settings.updateSettings(req.body || {}));
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
 // ---- Auth -------------------------------------------------------------------
 app.post("/auth/login", loginLimiter, (req, res) => {
   const { password } = req.body || {};
@@ -84,11 +105,13 @@ app.get("/services", async (req, res) => {
     const { rows } = await pool.query(
       `SELECT * FROM services ${all ? "" : "WHERE active = TRUE"} ORDER BY kind, sort, nama`,
     );
+    const s = await settings.getSettings();
     res.json({
       services: rows.filter((r) => r.kind === "makeup"),
       nailArt: rows.filter((r) => r.kind === "nail"),
-      areas: pricing.areas,
+      areas: s.areas, // owner-set ongkir
       hairdoAddon: pricing.hairdoAddon,
+      dpPercent: s.dpPercent,
     });
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
@@ -222,6 +245,22 @@ app.post("/uploads", requireAuth, upload.single("file"), async (req, res) => {
   }
 });
 
+// POST /uploads/proof (public, rate-limited) -> { url }
+// Transfer-proof upload for the booking flow. Public because the guest isn't
+// logged in; rate-limited + image-only + size-capped to limit abuse. Stored in
+// a separate Cloudinary folder from the owner's photos.
+app.post("/uploads/proof", publicLimiter, upload.single("file"), async (req, res) => {
+  if (!uploads.isConfigured())
+    return res.status(501).json({ error: "uploads_not_configured", detail: "Set CLOUDINARY_* env vars." });
+  if (!req.file) return res.status(400).json({ error: "no_file" });
+  try {
+    const url = await uploads.uploadBuffer(req.file.buffer, { folder: "salia/bukti" });
+    res.status(201).json({ url });
+  } catch (e) {
+    res.status(500).json({ error: "upload_failed", detail: e.message });
+  }
+});
+
 // ---- Bookings ---------------------------------------------------------------
 // POST /bookings (public). The total is recomputed from the DB service row — a
 // client-sent total is never trusted, and the price follows whatever the owner
@@ -241,7 +280,13 @@ app.post("/bookings", publicLimiter, async (req, res) => {
   }
   if (!service || !service.active) return res.status(400).json({ error: "unknown_service" });
 
-  const q = pricing.computeTotal({ service, area_id: b.area_id, hairdo: b.hairdo });
+  let areaList;
+  try {
+    areaList = (await settings.getSettings()).areas;
+  } catch {
+    areaList = null; // fall back to default areas in computeTotal
+  }
+  const q = pricing.computeTotal({ service, area_id: b.area_id, hairdo: b.hairdo, areaList });
   if (q.error) return res.status(400).json({ error: q.error });
 
   try {

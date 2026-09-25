@@ -55,6 +55,22 @@ async function ensureSchema() {
     )
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      id            INTEGER PRIMARY KEY DEFAULT 1,
+      dp_percent    INTEGER NOT NULL DEFAULT 50,
+      bank_name     TEXT,
+      bank_number   TEXT,
+      bank_holder   TEXT,
+      areas         JSONB,
+      instagram_url TEXT,
+      tiktok_url    TEXT,
+      google_url    TEXT,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT settings_singleton CHECK (id = 1)
+    )
+  `);
+
   await seedServices();
 }
 

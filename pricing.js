@@ -50,10 +50,13 @@ function offersHairdo(service) {
 }
 
 // Compute a booking total from a resolved service ROW (from the DB) + trusted
-// inputs. Unknown area falls back to zero fee; the service must exist.
-function computeTotal({ service, area_id, hairdo }) {
+// inputs. `areaList` (from settings) overrides the default areas so the owner's
+// dashboard-set ongkir is used. Unknown area falls back to zero fee; the service
+// must exist.
+function computeTotal({ service, area_id, hairdo, areaList }) {
   if (!service) return { error: "unknown_service" };
-  const area = findArea(area_id) || areas[0];
+  const list = Array.isArray(areaList) && areaList.length ? areaList : areas;
+  const area = list.find((a) => a.id === area_id) || list[0];
   const usesHairdo = offersHairdo(service) && !!hairdo;
   const total = Number(service.base) + (area.fee || 0) + (usesHairdo ? hairdoAddon : 0);
   return {
