@@ -21,10 +21,16 @@ app.set("trust proxy", 1);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "https://saliamakeup.com";
 const PROD_ORIGINS = CORS_ORIGIN.split(",").map((o) => o.trim()).filter(Boolean);
 const LOCAL_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/;
+// Vercel gives every deploy its own *.vercel.app URL, so it can't be listed
+// ahead of time. Enable while testing on Vercel; turn off once the real domain
+// (saliamakeup.com) is pointed there — it admits any Vercel-hosted page.
+const VERCEL_ORIGIN_RE = /^https:\/\/[a-z0-9][a-z0-9-]*\.vercel\.app$/;
+const ALLOW_VERCEL = process.env.ALLOW_VERCEL_PREVIEWS === "true";
 function originAllowed(origin) {
   if (!origin) return true;
   if (PROD_ORIGINS.includes(origin)) return true;
   if (LOCAL_ORIGIN_RE.test(origin)) return true;
+  if (ALLOW_VERCEL && VERCEL_ORIGIN_RE.test(origin)) return true;
   return false;
 }
 app.use(
