@@ -33,6 +33,18 @@ eq("offersHairdo makeup", pricing.offersHairdo(svc("makeup")), true);
 eq("offersHairdo wisuda", pricing.offersHairdo(svc("wisuda")), false);
 eq("offersHairdo nail (null)", pricing.offersHairdo(svc("nail-gel")), false);
 
+// --- Cart rules: total = sum(item base) × orang + ongkir (once) ---------------
+const cart = (ids, orang, area_id) =>
+  pricing.computeCart({ items: ids.map(svc), orang, area_id });
+eq("cart single item", cart(["makeup"], 1, "dalam-kota").total, 150000);
+eq("cart × orang", cart(["makeup"], 3, "dalam-kota").total, 450000);
+eq("cart sum × orang + ongkir once", cart(["makeup", "nail-gel"], 2, "luar-jauh").total, (150000 + 150000) * 2 + 100000);
+eq("cart 3 categories", cart(["makeup", "hairdo-pesta", "nail-gel"], 1, "dalam-kota").total, 150000 + 150000 + 150000);
+eq("cart empty -> error", pricing.computeCart({ items: [], orang: 1 }).error, "empty_cart");
+eq("cart two same kind -> error", cart(["makeup", "wisuda"], 1, "dalam-kota").error, "duplicate_kind");
+eq("cart orang floor 1", cart(["makeup"], 0, "dalam-kota").orang, 1);
+eq("cart subtotal reported", cart(["makeup", "nail-gel"], 5, "dalam-kota").subtotal, 300000);
+
 // --- Seed table === frontend fallback table ----------------------------------
 const CANDIDATES = [
   path.join(__dirname, "..", "..", "salia-makeup", "lib", "config.js"),

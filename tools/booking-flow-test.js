@@ -62,17 +62,17 @@ db.pool.query = async (text, params = []) => {
     return { rows, rowCount: rows.length };
   }
   if (sql.startsWith("INSERT INTO services")) {
-    const [id, kind, nama, ringkas, base, hairdo_included, foto, sort, active] = params;
+    const [id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active] = params;
     if (services.some((s) => s.id === id)) { const e = new Error("dup"); e.code = "23505"; throw e; }
-    const row = { id, kind, nama, ringkas, base, hairdo_included, foto, sort, active, created_at: new Date().toISOString() };
+    const row = { id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active, created_at: new Date().toISOString() };
     services.push(row);
     return { rows: [row], rowCount: 1 };
   }
   if (sql.startsWith("UPDATE services SET")) {
-    const [kind, nama, ringkas, base, hairdo_included, foto, sort, active, id] = params;
+    const [kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail, id] = params;
     const r = services.find((s) => s.id === id);
     if (!r) return { rows: [], rowCount: 0 };
-    Object.assign(r, { kind, nama, ringkas, base, hairdo_included, foto, sort, active });
+    Object.assign(r, { kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail });
     return { rows: [r], rowCount: 1 };
   }
   if (sql.startsWith("DELETE FROM services")) {
@@ -101,10 +101,11 @@ db.pool.query = async (text, params = []) => {
 
   // bookings
   if (sql.startsWith("INSERT INTO bookings")) {
-    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total] = params;
+    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang] = params;
     const row = {
       id: ++bookingSeq, nama, telepon, service_id, service_nama, hairdo,
       area_id, area_nama, tanggal, jam, lokasi, catatan, total,
+      items: items ? JSON.parse(items) : null, orang: orang ?? 1,
       status: "baru", created_at: new Date().toISOString(),
     };
     bookings.push(row);
@@ -230,6 +231,7 @@ async function main() {
   // public services list
   const svcList = await req("GET", "/services");
   ok("services grouped", Array.isArray(svcList.json?.services) && Array.isArray(svcList.json?.nailArt));
+  ok("hairdo group present", Array.isArray(svcList.json?.hairdo) && svcList.json.hairdo.some((s) => s.id === "hairdo-pesta"));
   ok("services has areas + addon", Array.isArray(svcList.json?.areas) && typeof svcList.json?.hairdoAddon === "number");
   ok("makeup seeded", svcList.json.services.some((s) => s.id === "makeup"));
 
@@ -295,6 +297,18 @@ async function main() {
   // booking now uses the owner-set ongkir (75000 for luar-jauh)
   const bk2 = await req("POST", "/bookings", { body: { nama: "B", telepon: "08", service_id: "makeup", area_id: "luar-jauh", tanggal: "2026-10-05", jam: "09:00" } });
   ok("booking uses settings ongkir", bk2.json?.total === 150000 + 75000);
+
+  // cart checkout: 1 makeup + 1 hairdo + 1 nail, 2 people, far ongkir (75000 from settings)
+  const cart = await req("POST", "/bookings", {
+    body: { nama: "Cart", telepon: "08", items: ["makeup", "hairdo-pesta", "nail-gel"], orang: 2, area_id: "luar-jauh", tanggal: "2026-10-06", jam: "10:00" },
+  });
+  ok("cart total = sum×orang + ongkir", cart.json?.total === (150000 + 150000 + 150000) * 2 + 75000);
+  ok("cart stores items", Array.isArray(cart.json?.items) && cart.json.items.length === 3);
+  ok("cart stores orang", cart.json?.orang === 2);
+  ok("cart names all items", (cart.json?.service_nama || "").includes(",") );
+  ok("cart rejects two of same kind", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["makeup", "wisuda"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);
+  ok("cart rejects unknown item", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["ghost"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);
+  ok("cart ignores client total", cart.json?.total !== undefined && (await req("POST", "/bookings", { body: { nama: "Z", telepon: "08", items: ["nail-gel"], orang: 1, area_id: "dalam-kota", tanggal: "2026-10-06", jam: "10:00", total: 5 } })).json?.total === 150000);
   // /services echoes dpPercent + owner areas
   const svc2 = await req("GET", "/services");
   ok("services echoes dpPercent", svc2.json?.dpPercent === 40);

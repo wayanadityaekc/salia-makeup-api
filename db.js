@@ -29,6 +29,10 @@ async function ensureSchema() {
       created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Cart checkout (Sep 2026): a booking can carry several picked items (one per
+  // category) + a people count. `jam` now means the "ready" time.
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS items JSONB`);
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS orang INTEGER NOT NULL DEFAULT 1`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS services (
@@ -44,6 +48,10 @@ async function ensureSchema() {
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Richer card content (Sep 2026): long description + details, editable in the
+  // dashboard. `ringkas` stays as the short tagline.
+  await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS deskripsi TEXT`);
+  await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS detail TEXT`);
 
   // Live chat: two-way threads between a guest and the owner. A guest is
   // identified by a random client-generated conversation id (kept in their

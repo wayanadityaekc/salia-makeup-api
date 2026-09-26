@@ -18,6 +18,14 @@ const SEED_MAKEUP = [
   { id: "upacara", nama: "Upacara Adat", ringkas: "Riasan dan sanggul khas untuk upacara adat Bali.", base: 500000, hairdo_included: true },
 ];
 
+// Seed hairdo services (own category now — each a card the guest picks). Editable
+// from the dashboard like everything else. hairdo_included stays null here.
+const SEED_HAIRDO = [
+  { id: "hairdo-simpel", nama: "Hairdo Simpel", ringkas: "Penataan rambut rapi untuk sehari-hari / kerja.", base: 100000, hairdo_included: null },
+  { id: "hairdo-pesta", nama: "Hairdo Pesta", ringkas: "Sanggul / tatanan elegan untuk acara & pesta.", base: 150000, hairdo_included: null },
+  { id: "hairdo-adat", nama: "Sanggul Adat", ringkas: "Sanggul khas untuk upacara & adat Bali.", base: 200000, hairdo_included: null },
+];
+
 // Seed nail art services. hairdo_included stays null — the add-on never applies.
 const SEED_NAIL = [
   { id: "nail-polish", nama: "Nail Polish", ringkas: "Cat kuku rapi dengan pilihan warna favorit.", base: 75000, hairdo_included: null },
@@ -29,6 +37,7 @@ const SEED_NAIL = [
 // Full seed rows with kind + sort, ready to INSERT.
 const SEED_SERVICES = [
   ...SEED_MAKEUP.map((s, i) => ({ ...s, kind: "makeup", sort: i })),
+  ...SEED_HAIRDO.map((s, i) => ({ ...s, kind: "hairdo", sort: i })),
   ...SEED_NAIL.map((s, i) => ({ ...s, kind: "nail", sort: i })),
 ];
 
@@ -69,8 +78,36 @@ function computeTotal({ service, area_id, hairdo, areaList }) {
   };
 }
 
+// Cart total (new checkout): the guest picks up to one item per category
+// (makeup / hairdo / nail). Rule (Wayan, Sep 2026):
+//   total = (sum of picked item base prices) × jumlah orang + ongkir (once).
+// `items` are resolved service ROWS from the DB. Enforces one item per kind.
+function computeCart({ items, orang, area_id, areaList }) {
+  const rows = (items || []).filter(Boolean);
+  if (!rows.length) return { error: "empty_cart" };
+  const kinds = new Set();
+  for (const r of rows) {
+    if (kinds.has(r.kind)) return { error: "duplicate_kind" };
+    kinds.add(r.kind);
+  }
+  const list = Array.isArray(areaList) && areaList.length ? areaList : areas;
+  const area = list.find((a) => a.id === area_id) || list[0];
+  const people = Math.max(1, parseInt(orang, 10) || 1);
+  const subtotal = rows.reduce((s, r) => s + Number(r.base || 0), 0);
+  const total = subtotal * people + (area.fee || 0);
+  return {
+    items: rows.map((r) => ({ id: r.id, nama: r.nama, base: Number(r.base || 0), kind: r.kind })),
+    orang: people,
+    area_id: area.id,
+    area_nama: area.nama,
+    subtotal,
+    total,
+  };
+}
+
 module.exports = {
   SEED_MAKEUP,
+  SEED_HAIRDO,
   SEED_NAIL,
   SEED_SERVICES,
   areas,
@@ -78,4 +115,5 @@ module.exports = {
   findArea,
   offersHairdo,
   computeTotal,
+  computeCart,
 };

@@ -58,7 +58,7 @@ const loginLimiter = rateLimit({
 });
 
 const STATUSES = ["baru", "konfirmasi", "selesai"];
-const KINDS = ["makeup", "nail"];
+const KINDS = ["makeup", "hairdo", "nail"];
 
 // ---- Health -----------------------------------------------------------------
 app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -141,6 +141,7 @@ app.get("/services", async (req, res) => {
     const s = await settings.getSettings();
     res.json({
       services: rows.filter((r) => r.kind === "makeup"),
+      hairdo: rows.filter((r) => r.kind === "hairdo"),
       nailArt: rows.filter((r) => r.kind === "nail"),
       areas: s.areas, // owner-set ongkir
       hairdoAddon: pricing.hairdoAddon,
@@ -172,10 +173,11 @@ app.post("/services", requireAuth, async (req, res) => {
   const hairdoIncluded = b.kind === "nail" ? null : b.hairdo_included === true;
   try {
     const { rows } = await pool.query(
-      `INSERT INTO services (id, kind, nama, ringkas, base, hairdo_included, foto, sort, active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      `INSERT INTO services (id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [
         id, b.kind, String(b.nama).trim(), b.ringkas || null,
+        b.deskripsi || null, b.detail || null,
         Math.max(0, parseInt(b.base, 10) || 0), hairdoIncluded,
         b.foto || null, parseInt(b.sort, 10) || 0,
         b.active === undefined ? true : !!b.active,
@@ -199,6 +201,8 @@ app.patch("/services/:id", requireAuth, async (req, res) => {
     kind,
     nama: b.nama !== undefined ? String(b.nama).trim() : existing.nama,
     ringkas: b.ringkas !== undefined ? b.ringkas : existing.ringkas,
+    deskripsi: b.deskripsi !== undefined ? b.deskripsi : existing.deskripsi,
+    detail: b.detail !== undefined ? b.detail : existing.detail,
     base: b.base !== undefined ? Math.max(0, parseInt(b.base, 10) || 0) : existing.base,
     // nail art forces null; makeup keeps/accepts a boolean.
     hairdo_included:
@@ -210,8 +214,8 @@ app.patch("/services/:id", requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE services SET kind=$1, nama=$2, ringkas=$3, base=$4, hairdo_included=$5,
-         foto=$6, sort=$7, active=$8 WHERE id=$9 RETURNING *`,
-      [next.kind, next.nama, next.ringkas, next.base, next.hairdo_included, next.foto, next.sort, next.active, req.params.id],
+         foto=$6, sort=$7, active=$8, deskripsi=$9, detail=$10 WHERE id=$11 RETURNING *`,
+      [next.kind, next.nama, next.ringkas, next.base, next.hairdo_included, next.foto, next.sort, next.active, next.deskripsi, next.detail, req.params.id],
     );
     res.json(rows[0]);
   } catch (e) {
@@ -436,47 +440,79 @@ app.delete("/chat/:cid", requireAuth, async (req, res) => {
 });
 
 // ---- Bookings ---------------------------------------------------------------
-// POST /bookings (public). The total is recomputed from the DB service row — a
-// client-sent total is never trusted, and the price follows whatever the owner
-// set in the dashboard.
+// POST /bookings (public). The total is recomputed from the DB service rows — a
+// client-sent total is never trusted, and prices follow whatever the owner set in
+// the dashboard.
+//
+// Two shapes, both supported:
+//   - CART (new checkout): { items: [id,...], orang, ... } — up to one item per
+//     category; total = sum(item.base) × orang + ongkir (once). `jam` = ready time.
+//   - SINGLE (legacy): { service_id, hairdo, ... }.
 app.post("/bookings", publicLimiter, async (req, res) => {
   const b = req.body || {};
-  const missing = ["nama", "telepon", "service_id", "tanggal", "jam"].filter(
+  const baseMissing = ["nama", "telepon", "tanggal", "jam"].filter(
     (k) => !b[k] || String(b[k]).trim() === "",
   );
-  if (missing.length) return res.status(400).json({ error: "missing_fields", fields: missing });
-
-  let service;
-  try {
-    service = await getService(b.service_id);
-  } catch (e) {
-    return res.status(500).json({ error: "db_error", detail: e.message });
-  }
-  if (!service || !service.active) return res.status(400).json({ error: "unknown_service" });
+  if (baseMissing.length) return res.status(400).json({ error: "missing_fields", fields: baseMissing });
 
   let areaList;
   try {
     areaList = (await settings.getSettings()).areas;
   } catch {
-    areaList = null; // fall back to default areas in computeTotal
+    areaList = null; // fall back to default areas
   }
-  const q = pricing.computeTotal({ service, area_id: b.area_id, hairdo: b.hairdo, areaList });
-  if (q.error) return res.status(400).json({ error: q.error });
+
+  const isCart = Array.isArray(b.items) && b.items.length > 0;
+  let ins; // { service_id, service_nama, hairdo, area_id, area_nama, total, items, orang }
+
+  try {
+    if (isCart) {
+      const ids = [...new Set(b.items.map((x) => String(x)))].slice(0, 3);
+      const rows = [];
+      for (const id of ids) {
+        const svc = await getService(id);
+        if (!svc || !svc.active) return res.status(400).json({ error: "unknown_service", id });
+        rows.push(svc);
+      }
+      const q = pricing.computeCart({ items: rows, orang: b.orang, area_id: b.area_id, areaList });
+      if (q.error) return res.status(400).json({ error: q.error });
+      ins = {
+        service_id: q.items[0].id,
+        service_nama: q.items.map((i) => i.nama).join(", "),
+        hairdo: false,
+        area_id: q.area_id,
+        area_nama: q.area_nama,
+        total: q.total,
+        items: JSON.stringify(q.items),
+        orang: q.orang,
+      };
+    } else {
+      if (!b.service_id || String(b.service_id).trim() === "")
+        return res.status(400).json({ error: "missing_fields", fields: ["service_id"] });
+      const service = await getService(b.service_id);
+      if (!service || !service.active) return res.status(400).json({ error: "unknown_service" });
+      const q = pricing.computeTotal({ service, area_id: b.area_id, hairdo: b.hairdo, areaList });
+      if (q.error) return res.status(400).json({ error: q.error });
+      ins = { ...q, items: null, orang: 1 };
+    }
+  } catch (e) {
+    return res.status(500).json({ error: "db_error", detail: e.message });
+  }
 
   try {
     const { rows } = await pool.query(
       `INSERT INTO bookings
          (nama, telepon, service_id, service_nama, hairdo,
-          area_id, area_nama, tanggal, jam, lokasi, catatan, total)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         String(b.nama).trim(), String(b.telepon).trim(),
-        q.service_id, q.service_nama, q.hairdo,
-        q.area_id, q.area_nama, b.tanggal, b.jam,
+        ins.service_id, ins.service_nama, ins.hairdo,
+        ins.area_id, ins.area_nama, b.tanggal, b.jam,
         b.lokasi ? String(b.lokasi).trim() : null,
         b.catatan ? String(b.catatan).trim() : null,
-        q.total,
+        ins.total, ins.items, ins.orang,
       ],
     );
     // Notify the owner's installed app. Fire-and-forget — never blocks/fails the booking.
