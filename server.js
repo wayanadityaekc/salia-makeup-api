@@ -294,6 +294,61 @@ app.post("/uploads/proof", publicLimiter, upload.single("file"), async (req, res
   }
 });
 
+// ---- Messages (web chat) ----------------------------------------------------
+// POST /messages (public, rate-limited) — a guest leaves a message on the site.
+// Notifies the owner (push) and shows up in the dashboard inbox.
+app.post("/messages", publicLimiter, async (req, res) => {
+  const b = req.body || {};
+  const nama = String(b.nama || "").trim();
+  const pesan = String(b.pesan || "").trim();
+  if (!nama || !pesan) return res.status(400).json({ error: "missing_fields", fields: ["nama", "pesan"] });
+  if (pesan.length > 2000) return res.status(400).json({ error: "pesan_too_long" });
+  try {
+    const { rows } = await pool.query(
+      "INSERT INTO messages (nama, telepon, pesan) VALUES ($1,$2,$3) RETURNING *",
+      [nama, b.telepon ? String(b.telepon).trim() : null, pesan],
+    );
+    push.notifyNewMessage(rows[0]); // fire-and-forget
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /messages (admin) — newest first.
+app.get("/messages", requireAuth, async (_req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM messages ORDER BY created_at DESC, id DESC");
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// PATCH /messages/:id (admin) — mark read/unread.
+app.patch("/messages/:id", requireAuth, async (req, res) => {
+  const status = (req.body || {}).status;
+  if (!["baru", "dibaca"].includes(status)) return res.status(400).json({ error: "invalid_status" });
+  try {
+    const { rows } = await pool.query("UPDATE messages SET status=$1 WHERE id=$2 RETURNING *", [status, req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: "not_found" });
+    res.json(rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// DELETE /messages/:id (admin)
+app.delete("/messages/:id", requireAuth, async (req, res) => {
+  try {
+    const { rowCount } = await pool.query("DELETE FROM messages WHERE id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: "not_found" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
 // ---- Bookings ---------------------------------------------------------------
 // POST /bookings (public). The total is recomputed from the DB service row — a
 // client-sent total is never trusted, and the price follows whatever the owner

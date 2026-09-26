@@ -14,9 +14,11 @@ const db = require("../db");
 // --- In-memory tables --------------------------------------------------------
 let bookingSeq = 0;
 let gallerySeq = 0;
+let messageSeq = 0;
 let pushConfig = null;
 const bookings = [];
 const gallery = [];
+const messages = [];
 // Seed services exactly like a real first boot.
 const services = pricing.SEED_SERVICES.map((s) => ({
   id: s.id, kind: s.kind, nama: s.nama, ringkas: s.ringkas, base: s.base,
@@ -126,6 +128,29 @@ db.pool.query = async (text, params = []) => {
     bookings.splice(i, 1);
     return { rows: [], rowCount: 1 };
   }
+  // messages (web chat)
+  if (sql.startsWith("INSERT INTO messages")) {
+    const [nama, telepon, pesan] = params;
+    const row = { id: ++messageSeq, nama, telepon, pesan, status: "baru", created_at: new Date().toISOString() };
+    messages.push(row);
+    return { rows: [row], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT * FROM messages")) {
+    return { rows: [...messages].reverse(), rowCount: messages.length };
+  }
+  if (sql.startsWith("UPDATE messages SET status")) {
+    const r = messages.find((m) => String(m.id) === String(params[1]));
+    if (!r) return { rows: [], rowCount: 0 };
+    r.status = params[0];
+    return { rows: [r], rowCount: 1 };
+  }
+  if (sql.startsWith("DELETE FROM messages")) {
+    const i = messages.findIndex((m) => String(m.id) === String(params[0]));
+    if (i === -1) return { rows: [], rowCount: 0 };
+    messages.splice(i, 1);
+    return { rows: [], rowCount: 1 };
+  }
+
   // push (new-booking notify path) — no subscriptions in this suite, so nothing sends
   if (sql.startsWith("SELECT public_key, private_key FROM push_config")) {
     return { rows: pushConfig ? [pushConfig] : [], rowCount: pushConfig ? 1 : 0 };
@@ -240,6 +265,15 @@ async function main() {
 
   // bookings admin still works
   ok("bookings list", Array.isArray((await req("GET", "/bookings", { token })).json));
+
+  // messages (web chat)
+  ok("message needs fields", (await req("POST", "/messages", { body: { nama: "A" } })).status === 400);
+  ok("message create public", (await req("POST", "/messages", { body: { nama: "Yulia", telepon: "0812", pesan: "Halo kak" } })).status === 201);
+  ok("messages list needs auth", (await req("GET", "/messages")).status === 401);
+  const msgs = (await req("GET", "/messages", { token })).json;
+  ok("messages listed", Array.isArray(msgs) && msgs.length === 1 && msgs[0].pesan === "Halo kak");
+  ok("message mark read", (await req("PATCH", "/messages/" + msgs[0].id, { token, body: { status: "dibaca" } })).json?.status === "dibaca");
+  ok("message delete", (await req("DELETE", "/messages/" + msgs[0].id, { token })).json?.ok === true);
 
   await new Promise((r) => server.close(r));
   if (fail.length) {

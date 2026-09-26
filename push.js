@@ -114,6 +114,14 @@ function notifyNewBooking(b) {
   );
 }
 
+// Fire-and-forget: notify the owner of a new web-chat message. Never throws.
+function notifyNewMessage(m) {
+  const snippet = String(m.pesan || "").slice(0, 80);
+  sendToAll({ title: "Chat baru masuk", body: `${m.nama}: ${snippet}`, tag: `message-${m.id}`, url: "/dashboard" }).catch(
+    (e) => console.error("notifyNewMessage:", e.message),
+  );
+}
+
 module.exports = {
   ensurePushSchema,
   loadKeys,
@@ -122,4 +130,5 @@ module.exports = {
   unsubscribe,
   sendToAll,
   notifyNewBooking,
+  notifyNewMessage,
 };

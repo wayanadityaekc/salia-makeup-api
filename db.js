@@ -45,6 +45,19 @@ async function ensureSchema() {
     )
   `);
 
+  // Web chat: a guest leaves a message on the site; it lands here (and notifies
+  // the owner). Owner reads it in the dashboard and replies via WhatsApp.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id         SERIAL PRIMARY KEY,
+      nama       TEXT NOT NULL,
+      telepon    TEXT,
+      pesan      TEXT NOT NULL,
+      status     TEXT NOT NULL DEFAULT 'baru',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gallery (
       id         SERIAL PRIMARY KEY,
