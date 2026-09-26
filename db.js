@@ -108,6 +108,7 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS whatsapp TEXT`);
 
   await seedServices();
+  await seedHairdoIfMissing();
 }
 
 // Populate the services table from the seed ONLY when it's empty — never
@@ -125,4 +126,23 @@ async function seedServices() {
   }
 }
 
-module.exports = { pool, ensureSchema, seedServices };
+// Add the hairdo items to an ALREADY-seeded database (hairdo became its own
+// category after the services table was first populated, so seedServices — which
+// only runs on a totally empty table — never inserts them there). Runs only when
+// there are zero hairdo rows, so it never duplicates or overwrites owner edits.
+async function seedHairdoIfMissing() {
+  const { rows } = await pool.query("SELECT COUNT(*)::int AS n FROM services WHERE kind = 'hairdo'");
+  if (rows[0].n > 0) return;
+  const seeds = pricing.SEED_HAIRDO || [];
+  for (let i = 0; i < seeds.length; i++) {
+    const s = seeds[i];
+    await pool.query(
+      `INSERT INTO services (id, kind, nama, ringkas, base, hairdo_included, sort, active)
+       VALUES ($1,'hairdo',$2,$3,$4,$5,$6,TRUE)
+       ON CONFLICT (id) DO NOTHING`,
+      [s.id, s.nama, s.ringkas, s.base, s.hairdo_included ?? null, i],
+    );
+  }
+}
+
+module.exports = { pool, ensureSchema, seedServices, seedHairdoIfMissing };
