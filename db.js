@@ -45,18 +45,31 @@ async function ensureSchema() {
     )
   `);
 
-  // Web chat: a guest leaves a message on the site; it lands here (and notifies
-  // the owner). Owner reads it in the dashboard and replies via WhatsApp.
+  // Live chat: two-way threads between a guest and the owner. A guest is
+  // identified by a random client-generated conversation id (kept in their
+  // localStorage) — no guest login. Owner replies in the dashboard.
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id         SERIAL PRIMARY KEY,
-      nama       TEXT NOT NULL,
-      telepon    TEXT,
-      pesan      TEXT NOT NULL,
-      status     TEXT NOT NULL DEFAULT 'baru',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    CREATE TABLE IF NOT EXISTS conversations (
+      id           TEXT PRIMARY KEY,
+      nama         TEXT,
+      telepon      TEXT,
+      last_body    TEXT,
+      last_sender  TEXT,
+      last_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      owner_unread INTEGER NOT NULL DEFAULT 0,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id              SERIAL PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      sender          TEXT NOT NULL,   -- 'guest' | 'owner'
+      body            TEXT NOT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS chat_messages_convo_idx ON chat_messages (conversation_id, id)`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gallery (

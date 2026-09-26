@@ -36,9 +36,15 @@ db.pool.query = async (text, params = []) => {
     const r = services.find((s) => s.id === params[0]);
     return { rows: r ? [r] : [], rowCount: r ? 1 : 0 };
   }
-  if (sql.startsWith("INSERT INTO messages")) {
-    const [nama, telepon, pesan] = params;
-    return { rows: [{ id: 1, nama, telepon, pesan, status: "baru", created_at: new Date().toISOString() }], rowCount: 1 };
+  if (sql.startsWith("INSERT INTO conversations")) {
+    const [id, nama] = params;
+    return { rows: [{ id, nama }], rowCount: 1 };
+  }
+  if (sql.startsWith("INSERT INTO chat_messages")) {
+    return { rows: [{ id: 1, conversation_id: params[0], sender: "guest", body: params[1], created_at: new Date().toISOString() }], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT id, nama FROM conversations WHERE id")) {
+    return { rows: [{ id: params[0], nama: "Yulia" }], rowCount: 1 };
   }
   if (sql.startsWith("INSERT INTO bookings")) {
     const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total] = params;
@@ -130,14 +136,14 @@ async function main() {
   ok("push has a title", (sent[0]?.data?.title || "").length > 0);
   ok("push opens the dashboard", sent[0]?.data?.url === "/dashboard");
 
-  // 3b) a new web-chat message also notifies
+  // 3b) a new live-chat message also notifies
   sent = [];
-  const m1 = await req("POST", "/messages", { body: { nama: "Yulia", telepon: "0812", pesan: "Halo kak mau tanya" } });
-  ok("message created", m1.status === 201);
+  const m1 = await req("POST", "/chat/conv-abcdef0123456789/messages", { body: { nama: "Yulia", body: "Halo kak mau tanya" } });
+  ok("chat message created", m1.status === 201);
   await sleep(50);
-  ok("message push sent", sent.length === 1);
-  ok("message push names sender", (sent[0]?.data?.body || "").includes("Yulia"));
-  ok("message push title", (sent[0]?.data?.title || "") === "Chat baru masuk");
+  ok("chat push sent", sent.length === 1);
+  ok("chat push has snippet", (sent[0]?.data?.body || "").includes("Halo kak"));
+  ok("chat push title names guest", (sent[0]?.data?.title || "").includes("Yulia"));
 
   // 4) two subscribers both get it
   await req("POST", "/push/subscribe", { token, body: SUB("2") });

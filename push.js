@@ -114,12 +114,16 @@ function notifyNewBooking(b) {
   );
 }
 
-// Fire-and-forget: notify the owner of a new web-chat message. Never throws.
-function notifyNewMessage(m) {
-  const snippet = String(m.pesan || "").slice(0, 80);
-  sendToAll({ title: "Chat baru masuk", body: `${m.nama}: ${snippet}`, tag: `message-${m.id}`, url: "/dashboard" }).catch(
-    (e) => console.error("notifyNewMessage:", e.message),
-  );
+// Fire-and-forget: notify the owner of a new live-chat message. Never throws.
+// Uses one tag per conversation so rapid messages collapse into one notification.
+function notifyNewChat(convo, body) {
+  const snippet = String(body || "").slice(0, 90);
+  sendToAll({
+    title: `Chat: ${convo.nama || "Tamu"}`,
+    body: snippet,
+    tag: `chat-${convo.id}`,
+    url: "/dashboard",
+  }).catch((e) => console.error("notifyNewChat:", e.message));
 }
 
 module.exports = {
@@ -130,5 +134,5 @@ module.exports = {
   unsubscribe,
   sendToAll,
   notifyNewBooking,
-  notifyNewMessage,
+  notifyNewChat,
 };

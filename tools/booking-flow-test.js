@@ -14,11 +14,12 @@ const db = require("../db");
 // --- In-memory tables --------------------------------------------------------
 let bookingSeq = 0;
 let gallerySeq = 0;
-let messageSeq = 0;
+let chatSeq = 0;
 let pushConfig = null;
 const bookings = [];
 const gallery = [];
-const messages = [];
+const conversations = new Map(); // id -> convo
+const chatMessages = []; // { id, conversation_id, sender, body, created_at }
 // Seed services exactly like a real first boot.
 const services = pricing.SEED_SERVICES.map((s) => ({
   id: s.id, kind: s.kind, nama: s.nama, ringkas: s.ringkas, base: s.base,
@@ -128,27 +129,65 @@ db.pool.query = async (text, params = []) => {
     bookings.splice(i, 1);
     return { rows: [], rowCount: 1 };
   }
-  // messages (web chat)
-  if (sql.startsWith("INSERT INTO messages")) {
-    const [nama, telepon, pesan] = params;
-    const row = { id: ++messageSeq, nama, telepon, pesan, status: "baru", created_at: new Date().toISOString() };
-    messages.push(row);
+  // live chat
+  if (sql.startsWith("INSERT INTO conversations")) {
+    const [id, nama, telepon, body] = params;
+    const existing = conversations.get(id);
+    if (existing) {
+      existing.nama = existing.nama || nama;
+      existing.telepon = existing.telepon || telepon;
+      existing.last_body = body; existing.last_sender = "guest"; existing.last_at = new Date().toISOString();
+      existing.owner_unread += 1;
+    } else {
+      conversations.set(id, { id, nama, telepon, last_body: body, last_sender: "guest", last_at: new Date().toISOString(), owner_unread: 1, created_at: new Date().toISOString() });
+    }
+    return { rows: [], rowCount: 1 };
+  }
+  if (sql.startsWith("INSERT INTO chat_messages")) {
+    const [conversation_id, , body] = params; // sender is a literal in the SQL
+    const sender = sql.includes("'guest'") ? "guest" : "owner";
+    const row = { id: ++chatSeq, conversation_id, sender, body, created_at: new Date().toISOString() };
+    chatMessages.push(row);
     return { rows: [row], rowCount: 1 };
   }
-  if (sql.startsWith("SELECT * FROM messages")) {
-    return { rows: [...messages].reverse(), rowCount: messages.length };
+  if (sql.startsWith("SELECT id, nama FROM conversations WHERE id")) {
+    const c = conversations.get(params[0]);
+    return { rows: c ? [{ id: c.id, nama: c.nama }] : [], rowCount: c ? 1 : 0 };
   }
-  if (sql.startsWith("UPDATE messages SET status")) {
-    const r = messages.find((m) => String(m.id) === String(params[1]));
-    if (!r) return { rows: [], rowCount: 0 };
-    r.status = params[0];
-    return { rows: [r], rowCount: 1 };
+  if (sql.startsWith("SELECT * FROM conversations WHERE id")) {
+    const c = conversations.get(params[0]);
+    return { rows: c ? [c] : [], rowCount: c ? 1 : 0 };
   }
-  if (sql.startsWith("DELETE FROM messages")) {
-    const i = messages.findIndex((m) => String(m.id) === String(params[0]));
-    if (i === -1) return { rows: [], rowCount: 0 };
-    messages.splice(i, 1);
+  if (sql.startsWith("SELECT 1 FROM conversations WHERE id")) {
+    return { rows: conversations.has(params[0]) ? [{ "?column?": 1 }] : [], rowCount: conversations.has(params[0]) ? 1 : 0 };
+  }
+  if (sql.startsWith("SELECT id, nama, telepon, last_body")) {
+    const rows = [...conversations.values()].sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
+    return { rows, rowCount: rows.length };
+  }
+  if (sql.startsWith("UPDATE conversations SET owner_unread = 0")) {
+    const c = conversations.get(params[0]); if (c) c.owner_unread = 0;
+    return { rows: [], rowCount: c ? 1 : 0 };
+  }
+  if (sql.startsWith("UPDATE conversations SET last_body")) {
+    const c = conversations.get(params[1]); if (c) { c.last_body = params[0]; c.last_sender = "owner"; c.last_at = new Date().toISOString(); }
+    return { rows: [], rowCount: c ? 1 : 0 };
+  }
+  if (sql.startsWith("SELECT * FROM chat_messages WHERE conversation_id") && sql.includes("id >")) {
+    const rows = chatMessages.filter((m) => m.conversation_id === params[0] && m.id > params[1]);
+    return { rows, rowCount: rows.length };
+  }
+  if (sql.startsWith("SELECT * FROM chat_messages WHERE conversation_id")) {
+    const rows = chatMessages.filter((m) => m.conversation_id === params[0]);
+    return { rows, rowCount: rows.length };
+  }
+  if (sql.startsWith("DELETE FROM chat_messages WHERE conversation_id")) {
+    for (let i = chatMessages.length - 1; i >= 0; i--) if (chatMessages[i].conversation_id === params[0]) chatMessages.splice(i, 1);
     return { rows: [], rowCount: 1 };
+  }
+  if (sql.startsWith("DELETE FROM conversations WHERE id")) {
+    const had = conversations.delete(params[0]);
+    return { rows: [], rowCount: had ? 1 : 0 };
   }
 
   // push (new-booking notify path) — no subscriptions in this suite, so nothing sends
@@ -266,14 +305,21 @@ async function main() {
   // bookings admin still works
   ok("bookings list", Array.isArray((await req("GET", "/bookings", { token })).json));
 
-  // messages (web chat)
-  ok("message needs fields", (await req("POST", "/messages", { body: { nama: "A" } })).status === 400);
-  ok("message create public", (await req("POST", "/messages", { body: { nama: "Yulia", telepon: "0812", pesan: "Halo kak" } })).status === 201);
-  ok("messages list needs auth", (await req("GET", "/messages")).status === 401);
-  const msgs = (await req("GET", "/messages", { token })).json;
-  ok("messages listed", Array.isArray(msgs) && msgs.length === 1 && msgs[0].pesan === "Halo kak");
-  ok("message mark read", (await req("PATCH", "/messages/" + msgs[0].id, { token, body: { status: "dibaca" } })).json?.status === "dibaca");
-  ok("message delete", (await req("DELETE", "/messages/" + msgs[0].id, { token })).json?.ok === true);
+  // live chat
+  const CID = "conv-abcdef0123456789";
+  ok("chat bad cid -> 400", (await req("POST", "/chat/short/messages", { body: { body: "hi" } })).status === 400);
+  ok("chat empty -> 400", (await req("POST", `/chat/${CID}/messages`, { body: { body: "" } })).status === 400);
+  ok("guest sends -> 201", (await req("POST", `/chat/${CID}/messages`, { body: { nama: "Yulia", telepon: "0812", body: "Halo kak" } })).status === 201);
+  ok("chat list needs auth", (await req("GET", "/chat")).status === 401);
+  const convos = (await req("GET", "/chat", { token })).json;
+  ok("conversation listed w/ unread", Array.isArray(convos) && convos.length === 1 && convos[0].ownerUnread === 1 && convos[0].nama === "Yulia");
+  const thread = (await req("GET", `/chat/${CID}`, { token })).json;
+  ok("thread has guest message", thread?.messages?.length === 1 && thread.messages[0].sender === "guest");
+  ok("open thread clears unread", (await req("GET", "/chat", { token })).json[0].ownerUnread === 0);
+  ok("owner reply -> 201", (await req("POST", `/chat/${CID}/reply`, { token, body: { body: "Halo juga" } })).status === 201);
+  ok("guest polls owner reply", (await req("GET", `/chat/${CID}/messages?since=0`)).json.messages.some((m) => m.sender === "owner"));
+  ok("reply needs auth", (await req("POST", `/chat/${CID}/reply`, { body: { body: "x" } })).status === 401);
+  ok("chat delete", (await req("DELETE", `/chat/${CID}`, { token })).json?.ok === true);
 
   await new Promise((r) => server.close(r));
   if (fail.length) {

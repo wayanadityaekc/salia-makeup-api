@@ -294,54 +294,140 @@ app.post("/uploads/proof", publicLimiter, upload.single("file"), async (req, res
   }
 });
 
-// ---- Messages (web chat) ----------------------------------------------------
-// POST /messages (public, rate-limited) — a guest leaves a message on the site.
-// Notifies the owner (push) and shows up in the dashboard inbox.
-app.post("/messages", publicLimiter, async (req, res) => {
+// ---- Live chat --------------------------------------------------------------
+// A guest is identified by a random conversation id they generate and keep in
+// localStorage (no guest login). It's unguessable, so it also acts as the read
+// key for that one thread. Owner routes are admin-gated.
+const CID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+const chatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 240, standardHeaders: true, legacyHeaders: false,
+  message: { error: "too_many_requests" },
+});
+
+function chatMsgRow(r) {
+  return { id: r.id, sender: r.sender, body: r.body, createdAt: r.created_at };
+}
+
+// POST /chat/:cid/messages (public) — guest sends a message. Creates the
+// conversation on first message. Notifies the owner.
+app.post("/chat/:cid/messages", chatLimiter, async (req, res) => {
+  const cid = req.params.cid;
+  if (!CID_RE.test(cid)) return res.status(400).json({ error: "invalid_cid" });
   const b = req.body || {};
-  const nama = String(b.nama || "").trim();
-  const pesan = String(b.pesan || "").trim();
-  if (!nama || !pesan) return res.status(400).json({ error: "missing_fields", fields: ["nama", "pesan"] });
-  if (pesan.length > 2000) return res.status(400).json({ error: "pesan_too_long" });
+  const body = String(b.body || "").trim();
+  if (!body) return res.status(400).json({ error: "empty_message" });
+  if (body.length > 2000) return res.status(400).json({ error: "message_too_long" });
+  const nama = b.nama ? String(b.nama).trim().slice(0, 80) : null;
+  const telepon = b.telepon ? String(b.telepon).trim().slice(0, 40) : null;
+  try {
+    // Upsert conversation; keep the first name/phone unless empty.
+    await pool.query(
+      `INSERT INTO conversations (id, nama, telepon, last_body, last_sender, last_at, owner_unread)
+       VALUES ($1,$2,$3,$4,'guest',NOW(),1)
+       ON CONFLICT (id) DO UPDATE SET
+         nama = COALESCE(conversations.nama, EXCLUDED.nama),
+         telepon = COALESCE(conversations.telepon, EXCLUDED.telepon),
+         last_body = EXCLUDED.last_body, last_sender = 'guest', last_at = NOW(),
+         owner_unread = conversations.owner_unread + 1`,
+      [cid, nama, telepon, body],
+    );
+    const { rows } = await pool.query(
+      "INSERT INTO chat_messages (conversation_id, sender, body) VALUES ($1,'guest',$2) RETURNING *",
+      [cid, body],
+    );
+    const { rows: crows } = await pool.query("SELECT id, nama FROM conversations WHERE id = $1", [cid]);
+    push.notifyNewChat(crows[0] || { id: cid, nama }, body); // fire-and-forget
+    res.status(201).json({ message: chatMsgRow(rows[0]) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /chat/:cid/messages?since=<id> (public) — guest polls its own thread.
+app.get("/chat/:cid/messages", async (req, res) => {
+  const cid = req.params.cid;
+  if (!CID_RE.test(cid)) return res.status(400).json({ error: "invalid_cid" });
+  const since = parseInt(req.query.since, 10) || 0;
   try {
     const { rows } = await pool.query(
-      "INSERT INTO messages (nama, telepon, pesan) VALUES ($1,$2,$3) RETURNING *",
-      [nama, b.telepon ? String(b.telepon).trim() : null, pesan],
+      "SELECT * FROM chat_messages WHERE conversation_id = $1 AND id > $2 ORDER BY id ASC",
+      [cid, since],
     );
-    push.notifyNewMessage(rows[0]); // fire-and-forget
-    res.status(201).json({ ok: true });
+    res.json({ messages: rows.map(chatMsgRow) });
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
   }
 });
 
-// GET /messages (admin) — newest first.
-app.get("/messages", requireAuth, async (_req, res) => {
+// GET /chat (admin) — conversation list, newest activity first.
+app.get("/chat", requireAuth, async (_req, res) => {
   try {
-    const { rows } = await pool.query("SELECT * FROM messages ORDER BY created_at DESC, id DESC");
-    res.json(rows);
+    const { rows } = await pool.query(
+      "SELECT id, nama, telepon, last_body, last_sender, last_at, owner_unread FROM conversations ORDER BY last_at DESC",
+    );
+    res.json(
+      rows.map((r) => ({
+        id: r.id, nama: r.nama, telepon: r.telepon,
+        lastBody: r.last_body, lastSender: r.last_sender, lastAt: r.last_at, ownerUnread: r.owner_unread,
+      })),
+    );
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
   }
 });
 
-// PATCH /messages/:id (admin) — mark read/unread.
-app.patch("/messages/:id", requireAuth, async (req, res) => {
-  const status = (req.body || {}).status;
-  if (!["baru", "dibaca"].includes(status)) return res.status(400).json({ error: "invalid_status" });
+// GET /chat/:cid (admin) — full thread; clears the owner's unread count.
+app.get("/chat/:cid", requireAuth, async (req, res) => {
+  const cid = req.params.cid;
+  if (!CID_RE.test(cid)) return res.status(400).json({ error: "invalid_cid" });
   try {
-    const { rows } = await pool.query("UPDATE messages SET status=$1 WHERE id=$2 RETURNING *", [status, req.params.id]);
-    if (!rows.length) return res.status(404).json({ error: "not_found" });
-    res.json(rows[0]);
+    const { rows: crows } = await pool.query("SELECT * FROM conversations WHERE id = $1", [cid]);
+    if (!crows.length) return res.status(404).json({ error: "not_found" });
+    await pool.query("UPDATE conversations SET owner_unread = 0 WHERE id = $1", [cid]);
+    const { rows } = await pool.query(
+      "SELECT * FROM chat_messages WHERE conversation_id = $1 ORDER BY id ASC",
+      [cid],
+    );
+    const c = crows[0];
+    res.json({
+      conversation: { id: c.id, nama: c.nama, telepon: c.telepon },
+      messages: rows.map(chatMsgRow),
+    });
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
   }
 });
 
-// DELETE /messages/:id (admin)
-app.delete("/messages/:id", requireAuth, async (req, res) => {
+// POST /chat/:cid/reply (admin) — owner replies. Guest sees it on next poll.
+app.post("/chat/:cid/reply", requireAuth, async (req, res) => {
+  const cid = req.params.cid;
+  if (!CID_RE.test(cid)) return res.status(400).json({ error: "invalid_cid" });
+  const body = String((req.body || {}).body || "").trim();
+  if (!body) return res.status(400).json({ error: "empty_message" });
+  if (body.length > 2000) return res.status(400).json({ error: "message_too_long" });
   try {
-    const { rowCount } = await pool.query("DELETE FROM messages WHERE id = $1", [req.params.id]);
+    const { rowCount } = await pool.query("SELECT 1 FROM conversations WHERE id = $1", [cid]);
+    if (!rowCount) return res.status(404).json({ error: "not_found" });
+    const { rows } = await pool.query(
+      "INSERT INTO chat_messages (conversation_id, sender, body) VALUES ($1,'owner',$2) RETURNING *",
+      [cid, body],
+    );
+    await pool.query(
+      "UPDATE conversations SET last_body=$1, last_sender='owner', last_at=NOW() WHERE id=$2",
+      [body, cid],
+    );
+    res.status(201).json({ message: chatMsgRow(rows[0]) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// DELETE /chat/:cid (admin)
+app.delete("/chat/:cid", requireAuth, async (req, res) => {
+  const cid = req.params.cid;
+  try {
+    await pool.query("DELETE FROM chat_messages WHERE conversation_id = $1", [cid]);
+    const { rowCount } = await pool.query("DELETE FROM conversations WHERE id = $1", [cid]);
     if (!rowCount) return res.status(404).json({ error: "not_found" });
     res.json({ ok: true });
   } catch (e) {
