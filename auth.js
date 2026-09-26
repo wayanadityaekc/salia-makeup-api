@@ -2,7 +2,9 @@
 // the dashboard, and a signed JWT (JWT_SECRET) proves it on every admin request.
 const jwt = require("jsonwebtoken");
 
-const TOKEN_TTL = "7d"; // owner logs in ~weekly; short enough to matter, long enough to not annoy.
+// Single-owner admin on a personal phone: keep them logged in for a long time so
+// they don't get logged out and miss notifications. Logout still clears it.
+const TOKEN_TTL = "90d";
 
 function secret() {
   const s = process.env.JWT_SECRET;
