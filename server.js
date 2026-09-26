@@ -9,7 +9,10 @@ const pricing = require("./pricing");
 const uploads = require("./uploads");
 const settings = require("./settings");
 const push = require("./push");
+const email = require("./email");
+const crypto = require("crypto");
 const { passwordMatches, signToken, requireAuth } = require("./auth");
+const { hashPassword, verifyPassword, signUserToken, requireUser } = require("./userauth");
 
 const app = express();
 
@@ -112,6 +115,87 @@ app.post("/push/unsubscribe", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: "push_error", detail: e.message });
+  }
+});
+
+// ---- Customer accounts ------------------------------------------------------
+function userToUi(u) {
+  return { id: u.id, nama: u.nama, email: u.email, telepon: u.telepon, chatCid: u.chat_cid };
+}
+
+// POST /users/register { nama, email?, telepon?, password } — needs at least one
+// of email/telepon. Returns a user token + profile.
+app.post("/users/register", loginLimiter, async (req, res) => {
+  const b = req.body || {};
+  const nama = String(b.nama || "").trim();
+  const email = b.email ? String(b.email).trim().toLowerCase() : null;
+  const telepon = b.telepon ? String(b.telepon).trim() : null;
+  const password = String(b.password || "");
+  if (!nama) return res.status(400).json({ error: "missing_fields", fields: ["nama"] });
+  if (!email && !telepon) return res.status(400).json({ error: "need_email_or_phone" });
+  if (password.length < 6) return res.status(400).json({ error: "password_too_short" });
+  try {
+    const cid = crypto.randomUUID();
+    const { rows } = await pool.query(
+      `INSERT INTO users (nama, email, telepon, password_hash, chat_cid)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [nama, email, telepon, hashPassword(password), cid],
+    );
+    res.status(201).json({ token: signUserToken(rows[0]), user: userToUi(rows[0]) });
+  } catch (e) {
+    if (e.code === "23505") return res.status(409).json({ error: "account_exists" });
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// POST /users/login { identifier, password } — identifier = email or phone.
+app.post("/users/login", loginLimiter, async (req, res) => {
+  const b = req.body || {};
+  const id = String(b.identifier || "").trim();
+  const password = String(b.password || "");
+  if (!id || !password) return res.status(400).json({ error: "missing_fields" });
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE email = $1 OR telepon = $2 LIMIT 1",
+      [id.toLowerCase(), id],
+    );
+    const u = rows[0];
+    if (!u || !verifyPassword(password, u.password_hash)) return res.status(401).json({ error: "wrong_credentials" });
+    res.json({ token: signUserToken(u), user: userToUi(u) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /users/me (user) — restore session.
+app.get("/users/me", requireUser, async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [req.user.uid]);
+    if (!rows.length) return res.status(401).json({ error: "unauthorized" });
+    res.json({ user: userToUi(rows[0]) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// POST /receipt/email (user) — email the receipt PDF to the account's email.
+// Graceful when Resend isn't configured yet (skipped) or the account has no email.
+app.post("/receipt/email", requireUser, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [req.user.uid]);
+    const u = rows[0];
+    if (!u) return res.status(401).json({ error: "unauthorized" });
+    if (!u.email) return res.json({ ok: false, skipped: true, reason: "no_email_on_account" });
+    const result = await email.sendEmail({
+      to: u.email,
+      subject: `Struk booking ${b.ref || ""} — Salia Makeup`.trim(),
+      html: `<p>Halo ${u.nama},</p><p>Terima kasih sudah booking di Salia Makeup. Struk kamu terlampir.</p>`,
+      attachment: b.pdfBase64 ? { filename: b.filename || "struk-salia.pdf", content: b.pdfBase64 } : null,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: "email_error", detail: e.message });
   }
 });
 
@@ -364,6 +448,39 @@ app.get("/chat/:cid/messages", async (req, res) => {
   }
 });
 
+// POST /chat/:cid/receipt (public) — after a booking, drop a thank-you + receipt
+// link into the conversation as an owner message, so it shows in the guest's chat
+// (to download) and in the dashboard. Rate-limited; upserts the conversation.
+app.post("/chat/:cid/receipt", chatLimiter, async (req, res) => {
+  const cid = req.params.cid;
+  if (!CID_RE.test(cid)) return res.status(400).json({ error: "invalid_cid" });
+  const b = req.body || {};
+  const nama = b.nama ? String(b.nama).trim().slice(0, 80) : null;
+  const telepon = b.telepon ? String(b.telepon).trim().slice(0, 40) : null;
+  const url = String(b.url || "").trim();
+  if (!/^https?:\/\//.test(url)) return res.status(400).json({ error: "invalid_url" });
+  const ref = b.ref ? String(b.ref).slice(0, 40) : "";
+  const body = `Terima kasih${nama ? " " + nama : ""}! 🎉 Booking${ref ? " " + ref : ""} kamu sudah tercatat.\nStruk: ${url}\n\nAda yang mau ditanyakan? Balas aja di sini ya.`;
+  try {
+    await pool.query(
+      `INSERT INTO conversations (id, nama, telepon, last_body, last_sender, last_at, owner_unread)
+       VALUES ($1,$2,$3,$4,'owner',NOW(),0)
+       ON CONFLICT (id) DO UPDATE SET
+         nama = COALESCE(conversations.nama, EXCLUDED.nama),
+         telepon = COALESCE(conversations.telepon, EXCLUDED.telepon),
+         last_body = EXCLUDED.last_body, last_sender = 'owner', last_at = NOW()`,
+      [cid, nama, telepon, body],
+    );
+    const { rows } = await pool.query(
+      "INSERT INTO chat_messages (conversation_id, sender, body) VALUES ($1,'owner',$2) RETURNING *",
+      [cid, body],
+    );
+    res.status(201).json({ message: chatMsgRow(rows[0]) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
 // GET /chat (admin) — conversation list, newest activity first.
 app.get("/chat", requireAuth, async (_req, res) => {
   try {
@@ -437,6 +554,22 @@ app.delete("/chat/:cid", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// POST /uploads/receipt (public, rate-limited) -> { url }
+// Receipt PDF (generated in the browser) stored as a raw asset so it can be
+// dropped into the chat as a downloadable link both sides can see.
+app.post("/uploads/receipt", publicLimiter, upload.single("file"), async (req, res) => {
+  if (!uploads.isConfigured())
+    return res.status(501).json({ error: "uploads_not_configured", detail: "Set CLOUDINARY_* env vars." });
+  if (!req.file) return res.status(400).json({ error: "no_file" });
+  try {
+    const name = `struk-${Date.now()}`;
+    const url = await uploads.uploadRaw(req.file.buffer, { folder: "salia/receipt", filename: name });
+    res.status(201).json({ url });
+  } catch (e) {
+    res.status(500).json({ error: "upload_failed", detail: e.message });
   }
 });
 

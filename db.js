@@ -55,6 +55,20 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS detail TEXT`);
   await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS info TEXT`);
 
+  // Customer accounts (optional login). Identity is email and/or WhatsApp; both
+  // unique when present. chat_cid links the account to its live-chat thread.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id            SERIAL PRIMARY KEY,
+      nama          TEXT NOT NULL,
+      email         TEXT UNIQUE,
+      telepon       TEXT UNIQUE,
+      password_hash TEXT NOT NULL,
+      chat_cid      TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Live chat: two-way threads between a guest and the owner. A guest is
   // identified by a random client-generated conversation id (kept in their
   // localStorage) — no guest login. Owner replies in the dashboard.

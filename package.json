@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node tools/check-exports.js && node tools/pricing-spec-test.js && node tools/booking-flow-test.js && node tools/push-flow-test.js"
+    "test": "node tools/check-exports.js && node tools/pricing-spec-test.js && node tools/booking-flow-test.js && node tools/push-flow-test.js && node tools/user-flow-test.js"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",

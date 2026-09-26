@@ -43,4 +43,16 @@ function uploadBuffer(buffer, { folder = "salia" } = {}) {
   });
 }
 
-module.exports = { isConfigured, uploadBuffer };
+// Upload a non-image file (e.g. a receipt PDF) as a raw asset. Returns the URL.
+function uploadRaw(buffer, { folder = "salia/receipt", filename } = {}) {
+  if (!ensureConfigured()) return Promise.reject(new Error("uploads_not_configured"));
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: "raw", public_id: filename },
+      (err, result) => (err ? reject(err) : resolve(result.secure_url)),
+    );
+    stream.end(buffer);
+  });
+}
+
+module.exports = { isConfigured, uploadBuffer, uploadRaw };
