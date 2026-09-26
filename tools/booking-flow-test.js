@@ -101,11 +101,11 @@ db.pool.query = async (text, params = []) => {
 
   // bookings
   if (sql.startsWith("INSERT INTO bookings")) {
-    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang] = params;
+    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram] = params;
     const row = {
       id: ++bookingSeq, nama, telepon, service_id, service_nama, hairdo,
       area_id, area_nama, tanggal, jam, lokasi, catatan, total,
-      items: items ? JSON.parse(items) : null, orang: orang ?? 1,
+      items: items ? JSON.parse(items) : null, orang: orang ?? 1, instagram: instagram ?? null,
       status: "baru", created_at: new Date().toISOString(),
     };
     bookings.push(row);
@@ -305,6 +305,8 @@ async function main() {
   ok("cart total = sum×orang + ongkir", cart.json?.total === (150000 + 150000 + 150000) * 2 + 75000);
   ok("cart stores items", Array.isArray(cart.json?.items) && cart.json.items.length === 3);
   ok("cart stores orang", cart.json?.orang === 2);
+  const ig = await req("POST", "/bookings", { body: { nama: "IG", telepon: "08", items: ["nail-gel"], instagram: "@salia.client", tanggal: "2026-10-06", jam: "10:00" } });
+  ok("stores instagram without @", ig.json?.instagram === "salia.client");
   ok("cart names all items", (cart.json?.service_nama || "").includes(",") );
   ok("cart rejects two of same kind", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["makeup", "wisuda"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);
   ok("cart rejects unknown item", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["ghost"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);

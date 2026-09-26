@@ -33,6 +33,7 @@ async function ensureSchema() {
   // category) + a people count. `jam` now means the "ready" time.
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS items JSONB`);
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS orang INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS instagram TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS services (

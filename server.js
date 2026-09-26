@@ -503,8 +503,8 @@ app.post("/bookings", publicLimiter, async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO bookings
          (nama, telepon, service_id, service_nama, hairdo,
-          area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        RETURNING *`,
       [
         String(b.nama).trim(), String(b.telepon).trim(),
@@ -513,6 +513,7 @@ app.post("/bookings", publicLimiter, async (req, res) => {
         b.lokasi ? String(b.lokasi).trim() : null,
         b.catatan ? String(b.catatan).trim() : null,
         ins.total, ins.items, ins.orang,
+        b.instagram ? String(b.instagram).trim().replace(/^@/, "") : null,
       ],
     );
     // Notify the owner's installed app. Fire-and-forget — never blocks/fails the booking.
