@@ -8,6 +8,7 @@ const { pool, ensureSchema } = require("./db");
 const pricing = require("./pricing");
 const uploads = require("./uploads");
 const settings = require("./settings");
+const push = require("./push");
 const { passwordMatches, signToken, requireAuth } = require("./auth");
 
 const app = express();
@@ -79,6 +80,38 @@ app.patch("/settings", requireAuth, async (req, res) => {
     res.json(await settings.updateSettings(req.body || {}));
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// ---- Push notifications ------------------------------------------------------
+// GET /push/public-key (public) — the VAPID public key the browser needs to
+// subscribe. The private key never leaves the server.
+app.get("/push/public-key", async (_req, res) => {
+  try {
+    res.json({ publicKey: await push.getPublicKey() });
+  } catch (e) {
+    res.status(500).json({ error: "push_error", detail: e.message });
+  }
+});
+
+// POST /push/subscribe (admin) — store the owner's browser subscription.
+app.post("/push/subscribe", requireAuth, async (req, res) => {
+  try {
+    await push.subscribe(req.body || {});
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    if (e.code === "invalid_subscription") return res.status(400).json({ error: "invalid_subscription" });
+    res.status(500).json({ error: "push_error", detail: e.message });
+  }
+});
+
+// POST /push/unsubscribe (admin)
+app.post("/push/unsubscribe", requireAuth, async (req, res) => {
+  try {
+    await push.unsubscribe((req.body || {}).endpoint);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: "push_error", detail: e.message });
   }
 });
 
@@ -305,6 +338,8 @@ app.post("/bookings", publicLimiter, async (req, res) => {
         q.total,
       ],
     );
+    // Notify the owner's installed app. Fire-and-forget — never blocks/fails the booking.
+    push.notifyNewBooking(rows[0]);
     res.status(201).json(rows[0]);
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
@@ -361,6 +396,7 @@ module.exports = { app, STATUSES, KINDS };
 
 if (require.main === module) {
   ensureSchema()
+    .then(() => push.ensurePushSchema())
     .then(() => app.listen(PORT, () => console.log(`salia-makeup api listening on :${PORT}`)))
     .catch((e) => {
       console.error("Failed to ensure schema:", e.message);

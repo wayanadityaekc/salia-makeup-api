@@ -14,6 +14,7 @@ const db = require("../db");
 // --- In-memory tables --------------------------------------------------------
 let bookingSeq = 0;
 let gallerySeq = 0;
+let pushConfig = null;
 const bookings = [];
 const gallery = [];
 // Seed services exactly like a real first boot.
@@ -125,6 +126,18 @@ db.pool.query = async (text, params = []) => {
     bookings.splice(i, 1);
     return { rows: [], rowCount: 1 };
   }
+  // push (new-booking notify path) — no subscriptions in this suite, so nothing sends
+  if (sql.startsWith("SELECT public_key, private_key FROM push_config")) {
+    return { rows: pushConfig ? [pushConfig] : [], rowCount: pushConfig ? 1 : 0 };
+  }
+  if (sql.startsWith("INSERT INTO push_config")) {
+    pushConfig = { public_key: params[0], private_key: params[1] };
+    return { rows: [pushConfig], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT endpoint, p256dh, auth FROM push_subscriptions")) {
+    return { rows: [], rowCount: 0 };
+  }
+
   throw new Error("unexpected query in test: " + sql);
 };
 

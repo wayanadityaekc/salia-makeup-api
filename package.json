@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node tools/check-exports.js && node tools/pricing-spec-test.js && node tools/booking-flow-test.js"
+    "test": "node tools/check-exports.js && node tools/pricing-spec-test.js && node tools/booking-flow-test.js && node tools/push-flow-test.js"
   },
   "dependencies": {
     "cloudinary": "^2.5.1",
@@ -16,6 +16,7 @@
     "express-rate-limit": "^7.5.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "web-push": "^3.6.7"
   }
 }
