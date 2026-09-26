@@ -53,6 +53,7 @@ async function ensureSchema() {
   // dashboard. `ringkas` stays as the short tagline.
   await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS deskripsi TEXT`);
   await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS detail TEXT`);
+  await pool.query(`ALTER TABLE services ADD COLUMN IF NOT EXISTS info TEXT`);
 
   // Live chat: two-way threads between a guest and the owner. A guest is
   // identified by a random client-generated conversation id (kept in their

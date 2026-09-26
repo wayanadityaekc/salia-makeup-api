@@ -62,17 +62,17 @@ db.pool.query = async (text, params = []) => {
     return { rows, rowCount: rows.length };
   }
   if (sql.startsWith("INSERT INTO services")) {
-    const [id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active] = params;
+    const [id, kind, nama, ringkas, deskripsi, detail, info, base, hairdo_included, foto, sort, active] = params;
     if (services.some((s) => s.id === id)) { const e = new Error("dup"); e.code = "23505"; throw e; }
-    const row = { id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active, created_at: new Date().toISOString() };
+    const row = { id, kind, nama, ringkas, deskripsi, detail, info, base, hairdo_included, foto, sort, active, created_at: new Date().toISOString() };
     services.push(row);
     return { rows: [row], rowCount: 1 };
   }
   if (sql.startsWith("UPDATE services SET")) {
-    const [kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail, id] = params;
+    const [kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail, info, id] = params;
     const r = services.find((s) => s.id === id);
     if (!r) return { rows: [], rowCount: 0 };
-    Object.assign(r, { kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail });
+    Object.assign(r, { kind, nama, ringkas, base, hairdo_included, foto, sort, active, deskripsi, detail, info });
     return { rows: [r], rowCount: 1 };
   }
   if (sql.startsWith("DELETE FROM services")) {

@@ -173,11 +173,11 @@ app.post("/services", requireAuth, async (req, res) => {
   const hairdoIncluded = b.kind === "nail" ? null : b.hairdo_included === true;
   try {
     const { rows } = await pool.query(
-      `INSERT INTO services (id, kind, nama, ringkas, deskripsi, detail, base, hairdo_included, foto, sort, active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO services (id, kind, nama, ringkas, deskripsi, detail, info, base, hairdo_included, foto, sort, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [
         id, b.kind, String(b.nama).trim(), b.ringkas || null,
-        b.deskripsi || null, b.detail || null,
+        b.deskripsi || null, b.detail || null, b.info || null,
         Math.max(0, parseInt(b.base, 10) || 0), hairdoIncluded,
         b.foto || null, parseInt(b.sort, 10) || 0,
         b.active === undefined ? true : !!b.active,
@@ -203,6 +203,7 @@ app.patch("/services/:id", requireAuth, async (req, res) => {
     ringkas: b.ringkas !== undefined ? b.ringkas : existing.ringkas,
     deskripsi: b.deskripsi !== undefined ? b.deskripsi : existing.deskripsi,
     detail: b.detail !== undefined ? b.detail : existing.detail,
+    info: b.info !== undefined ? b.info : existing.info,
     base: b.base !== undefined ? Math.max(0, parseInt(b.base, 10) || 0) : existing.base,
     // nail art forces null; makeup keeps/accepts a boolean.
     hairdo_included:
@@ -214,8 +215,8 @@ app.patch("/services/:id", requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE services SET kind=$1, nama=$2, ringkas=$3, base=$4, hairdo_included=$5,
-         foto=$6, sort=$7, active=$8, deskripsi=$9, detail=$10 WHERE id=$11 RETURNING *`,
-      [next.kind, next.nama, next.ringkas, next.base, next.hairdo_included, next.foto, next.sort, next.active, next.deskripsi, next.detail, req.params.id],
+         foto=$6, sort=$7, active=$8, deskripsi=$9, detail=$10, info=$11 WHERE id=$12 RETURNING *`,
+      [next.kind, next.nama, next.ringkas, next.base, next.hairdo_included, next.foto, next.sort, next.active, next.deskripsi, next.detail, next.info, req.params.id],
     );
     res.json(rows[0]);
   } catch (e) {
