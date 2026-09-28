@@ -18,6 +18,7 @@ let chatSeq = 0;
 let pushConfig = null;
 const bookings = [];
 const gallery = [];
+const bookingTokens = new Map(); // token -> row
 const conversations = new Map(); // id -> convo
 const chatMessages = []; // { id, conversation_id, sender, body, created_at }
 // Seed services exactly like a real first boot.
@@ -99,17 +100,42 @@ db.pool.query = async (text, params = []) => {
     return { rows: [], rowCount: 1 };
   }
 
+  // booking tokens (magic link)
+  if (sql.startsWith("INSERT INTO booking_tokens")) {
+    const [tok, tanggal, label] = params;
+    const row = { token: tok, tanggal, label: label ?? null, expires_at: new Date(Date.now() + 3 * 864e5).toISOString(), used_at: null, created_at: new Date().toISOString() };
+    bookingTokens.set(tok, row);
+    return { rows: [row], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT * FROM booking_tokens WHERE token")) {
+    const r = bookingTokens.get(params[0]);
+    return { rows: r ? [r] : [], rowCount: r ? 1 : 0 };
+  }
+  if (sql.startsWith("UPDATE booking_tokens SET used_at")) {
+    const r = bookingTokens.get(params[0]);
+    if (r && !r.used_at && new Date(r.expires_at) > new Date()) { r.used_at = new Date().toISOString(); return { rows: [r], rowCount: 1 }; }
+    return { rows: [], rowCount: 0 };
+  }
+  if (sql.startsWith("SELECT * FROM booking_tokens ORDER BY")) {
+    return { rows: [...bookingTokens.values()], rowCount: bookingTokens.size };
+  }
+
   // bookings
   if (sql.startsWith("INSERT INTO bookings")) {
-    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram] = params;
+    const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram, emailAddr, user_id, proof_url] = params;
     const row = {
       id: ++bookingSeq, nama, telepon, service_id, service_nama, hairdo,
       area_id, area_nama, tanggal, jam, lokasi, catatan, total,
       items: items ? JSON.parse(items) : null, orang: orang ?? 1, instagram: instagram ?? null,
+      email: emailAddr ?? null, user_id: user_id ?? null, proof_url: proof_url ?? null,
       status: "baru", created_at: new Date().toISOString(),
     };
     bookings.push(row);
     return { rows: [row], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT * FROM bookings WHERE user_id")) {
+    const rows = bookings.filter((r) => String(r.user_id) === String(params[0])).reverse();
+    return { rows, rowCount: rows.length };
   }
   if (sql.startsWith("SELECT * FROM bookings WHERE status")) {
     const rows = bookings.filter((r) => r.status === params[0]).reverse();
@@ -238,6 +264,8 @@ async function main() {
   // login
   ok("wrong password -> 401", (await req("POST", "/auth/login", { body: { password: "nope" } })).status === 401);
   const token = (await req("POST", "/auth/login", { body: { password: "hunter2" } })).json.token;
+  // Mint a fresh single-use magic-link token bound to a date (bookings require one).
+  const mkTok = async (tanggal = "2026-10-01") => (await req("POST", "/booking-tokens", { token, body: { tanggal } })).json.token;
   ok("login -> token", typeof token === "string" && token.length > 10);
 
   // services CRUD (admin)
@@ -254,17 +282,28 @@ async function main() {
   ok("invalid kind -> 400", (await req("POST", "/services", { token, body: { nama: "Z", kind: "wat" } })).status === 400);
   ok("duplicate id -> 409", (await req("POST", "/services", { token, body: { id: "makeup", nama: "dup", kind: "makeup" } })).status === 409);
 
-  // booking uses the DB price (edited service)
+  // magic-link token gate
+  ok("booking without token -> 400 invalid_token", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "makeup", jam: "10:00" } })).status === 400 &&
+    true);
+  ok("booking bad token -> 400", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "makeup", jam: "10:00", token: "nope" } })).status === 400);
+  const tokChk = await req("GET", "/booking-token/" + (await mkTok("2026-10-09")));
+  ok("token check valid", tokChk.json?.valid === true && String(tokChk.json?.tanggal).startsWith("2026-10-09"));
+
+  // booking uses the DB price (edited service) — date comes from the token
   const bk = await req("POST", "/bookings", {
-    body: { nama: "Ayu", telepon: "08123", service_id: "prewedding", area_id: "luar-jauh", hairdo: true, tanggal: "2026-10-01", jam: "10:00", total: 999999 },
+    body: { nama: "Ayu", telepon: "08123", service_id: "prewedding", area_id: "luar-jauh", hairdo: true, jam: "10:00", total: 999999, token: await mkTok("2026-10-01") },
   });
   ok("booking uses DB price", bk.json?.total === 800000 + 100000 + 100000); // base 800k + far 100k + hairdo 100k
   ok("booking ignores client total", bk.json?.total !== 999999);
-  ok("unknown service -> 400", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "ghost", tanggal: "2026-10-01", jam: "10:00" } })).status === 400);
+  ok("booking date from token", String(bk.json?.tanggal).startsWith("2026-10-01"));
+  const onceTok = await mkTok("2026-10-02");
+  ok("token first use ok", (await req("POST", "/bookings", { body: { nama: "Once", telepon: "08", service_id: "makeup", jam: "10:00", token: onceTok } })).status === 201);
+  ok("token single-use (reuse -> 400)", (await req("POST", "/bookings", { body: { nama: "Twice", telepon: "08", service_id: "makeup", jam: "10:00", token: onceTok } })).status === 400);
+  ok("unknown service -> 400", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "ghost", jam: "10:00", token: await mkTok() } })).status === 400);
 
   // inactive service can't be booked
   await req("PATCH", "/services/prewedding", { token, body: { active: false } });
-  ok("inactive service -> 400", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "prewedding", tanggal: "2026-10-01", jam: "10:00" } })).status === 400);
+  ok("inactive service -> 400", (await req("POST", "/bookings", { body: { nama: "A", telepon: "08", service_id: "prewedding", jam: "10:00", token: await mkTok() } })).status === 400);
   ok("inactive hidden from public list", !(await req("GET", "/services")).json.services.some((s) => s.id === "prewedding"));
   ok("inactive shown with ?all=1", (await req("GET", "/services?all=1", { token })).json.services.some((s) => s.id === "prewedding"));
 
@@ -295,22 +334,22 @@ async function main() {
   ok("settings patch applies social", upd.json?.social?.instagram === "https://instagram.com/x");
   ok("settings patch applies whatsapp", upd.json?.whatsapp === "628111");
   // booking now uses the owner-set ongkir (75000 for luar-jauh)
-  const bk2 = await req("POST", "/bookings", { body: { nama: "B", telepon: "08", service_id: "makeup", area_id: "luar-jauh", tanggal: "2026-10-05", jam: "09:00" } });
+  const bk2 = await req("POST", "/bookings", { body: { nama: "B", telepon: "08", service_id: "makeup", area_id: "luar-jauh", jam: "09:00", token: await mkTok("2026-10-05") } });
   ok("booking uses settings ongkir", bk2.json?.total === 150000 + 75000);
 
   // cart checkout: 1 makeup + 1 hairdo + 1 nail, 2 people, far ongkir (75000 from settings)
   const cart = await req("POST", "/bookings", {
-    body: { nama: "Cart", telepon: "08", items: ["makeup", "hairdo-pesta", "nail-gel"], orang: 2, area_id: "luar-jauh", tanggal: "2026-10-06", jam: "10:00" },
+    body: { nama: "Cart", telepon: "08", items: ["makeup", "hairdo-pesta", "nail-gel"], orang: 2, area_id: "luar-jauh", jam: "10:00", token: await mkTok("2026-10-06") },
   });
   ok("cart total = sum×orang + ongkir", cart.json?.total === (150000 + 150000 + 150000) * 2 + 75000);
   ok("cart stores items", Array.isArray(cart.json?.items) && cart.json.items.length === 3);
   ok("cart stores orang", cart.json?.orang === 2);
-  const ig = await req("POST", "/bookings", { body: { nama: "IG", telepon: "08", items: ["nail-gel"], instagram: "@salia.client", tanggal: "2026-10-06", jam: "10:00" } });
+  const ig = await req("POST", "/bookings", { body: { nama: "IG", telepon: "08", items: ["nail-gel"], instagram: "@salia.client", jam: "10:00", token: await mkTok("2026-10-06") } });
   ok("stores instagram without @", ig.json?.instagram === "salia.client");
   ok("cart names all items", (cart.json?.service_nama || "").includes(",") );
-  ok("cart rejects two of same kind", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["makeup", "wisuda"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);
-  ok("cart rejects unknown item", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["ghost"], tanggal: "2026-10-06", jam: "10:00" } })).status === 400);
-  ok("cart ignores client total", cart.json?.total !== undefined && (await req("POST", "/bookings", { body: { nama: "Z", telepon: "08", items: ["nail-gel"], orang: 1, area_id: "dalam-kota", tanggal: "2026-10-06", jam: "10:00", total: 5 } })).json?.total === 150000);
+  ok("cart rejects two of same kind", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["makeup", "wisuda"], jam: "10:00", token: await mkTok() } })).status === 400);
+  ok("cart rejects unknown item", (await req("POST", "/bookings", { body: { nama: "X", telepon: "08", items: ["ghost"], jam: "10:00", token: await mkTok() } })).status === 400);
+  ok("cart ignores client total", cart.json?.total !== undefined && (await req("POST", "/bookings", { body: { nama: "Z", telepon: "08", items: ["nail-gel"], orang: 1, area_id: "dalam-kota", jam: "10:00", total: 5, token: await mkTok() } })).json?.total === 150000);
   // /services echoes dpPercent + owner areas
   const svc2 = await req("GET", "/services");
   ok("services echoes dpPercent", svc2.json?.dpPercent === 40);

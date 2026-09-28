@@ -34,6 +34,11 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS items JSONB`);
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS orang INTEGER NOT NULL DEFAULT 1`);
   await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS instagram TEXT`);
+  // Booking rework (Sep 2026): email (login identity + receipt), the customer
+  // account it belongs to, and the uploaded transfer-proof image.
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS email TEXT`);
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS user_id INTEGER`);
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS proof_url TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS services (
@@ -128,6 +133,36 @@ async function ensureSchema() {
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_kicker TEXT`);
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_title TEXT`);
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_photo TEXT`);
+
+  // Passwordless customer login (Sep 2026): identity is email + a 6-digit code
+  // emailed on demand. Old password column stays but is no longer required.
+  await pool.query(`ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL`);
+
+  // Magic-link approval tokens. Admin approves a date on WhatsApp, then hands the
+  // customer a single-use tokenised link bound to that date. Consumed on booking.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS booking_tokens (
+      token       TEXT PRIMARY KEY,
+      tanggal     DATE NOT NULL,
+      label       TEXT,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // One-time email login codes (6 digits, hashed, short-lived, single-use).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS login_codes (
+      id          SERIAL PRIMARY KEY,
+      email       TEXT NOT NULL,
+      code_hash   TEXT NOT NULL,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      used_at     TIMESTAMPTZ,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS login_codes_email_idx ON login_codes (email, id DESC)`);
 
   await seedServices();
   await seedHairdoIfMissing();

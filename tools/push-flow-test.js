@@ -18,6 +18,7 @@ let bookingSeq = 0;
 let pushConfig = null;
 const subs = [];
 const bookings = [];
+const bookingTokens = new Map();
 const services = pricing.SEED_SERVICES.map((s) => ({
   id: s.id, kind: s.kind, nama: s.nama, ringkas: s.ringkas, base: s.base,
   hairdo_included: s.hairdo_included, foto: null, sort: s.sort, active: true,
@@ -45,6 +46,20 @@ db.pool.query = async (text, params = []) => {
   }
   if (sql.startsWith("SELECT id, nama FROM conversations WHERE id")) {
     return { rows: [{ id: params[0], nama: "Yulia" }], rowCount: 1 };
+  }
+  // booking tokens (magic link) — bookings now require one
+  if (sql.startsWith("INSERT INTO booking_tokens")) {
+    const [tok, tanggal] = params;
+    bookingTokens.set(tok, { token: tok, tanggal, expires_at: new Date(Date.now() + 3 * 864e5).toISOString(), used_at: null });
+    return { rows: [bookingTokens.get(tok)], rowCount: 1 };
+  }
+  if (sql.startsWith("SELECT * FROM booking_tokens WHERE token")) {
+    const r = bookingTokens.get(params[0]); return { rows: r ? [r] : [], rowCount: r ? 1 : 0 };
+  }
+  if (sql.startsWith("UPDATE booking_tokens SET used_at")) {
+    const r = bookingTokens.get(params[0]);
+    if (r && !r.used_at && new Date(r.expires_at) > new Date()) { r.used_at = new Date().toISOString(); return { rows: [r], rowCount: 1 }; }
+    return { rows: [], rowCount: 0 };
   }
   if (sql.startsWith("INSERT INTO bookings")) {
     const [nama, telepon, service_id, service_nama, hairdo, area_id, area_nama, tanggal, jam, lokasi, catatan, total] = params;
@@ -113,6 +128,7 @@ async function main() {
     return { status: res.status, json };
   };
   const token = (await req("POST", "/auth/login", { body: { password: "hunter2" } })).json.token;
+  const mkTok = async () => (await req("POST", "/booking-tokens", { token, body: { tanggal: "2026-10-01" } })).json.token;
   const SUB = (id) => ({ endpoint: "https://push.example/" + id, keys: { p256dh: "p-" + id, auth: "a-" + id } });
   const booking = { nama: "Yulia", telepon: "08123", service_id: "makeup", tanggal: "2026-10-01", jam: "10:00" };
 
@@ -127,7 +143,7 @@ async function main() {
 
   // 3) a new booking notifies the subscriber
   sent = [];
-  const b1 = await req("POST", "/bookings", { body: booking });
+  const b1 = await req("POST", "/bookings", { body: { ...booking, token: await mkTok() } });
   ok("booking created", b1.status === 201);
   await sleep(50); // notify is fire-and-forget
   ok("one push sent", sent.length === 1);
@@ -148,14 +164,14 @@ async function main() {
   // 4) two subscribers both get it
   await req("POST", "/push/subscribe", { token, body: SUB("2") });
   sent = [];
-  await req("POST", "/bookings", { body: booking });
+  await req("POST", "/bookings", { body: { ...booking, token: await mkTok() } });
   await sleep(50);
   ok("both subscribers notified", sent.length === 2);
 
   // 5) booking still succeeds when a send throws (non-410)
   sent = [];
   failNext = { statusCode: 500 };
-  const b3 = await req("POST", "/bookings", { body: booking });
+  const b3 = await req("POST", "/bookings", { body: { ...booking, token: await mkTok() } });
   await sleep(50);
   ok("booking ok despite push error", b3.status === 201);
 
@@ -168,7 +184,7 @@ async function main() {
     if (sub.endpoint.endsWith("/gone")) { const e = new Error("gone"); e.statusCode = 410; throw e; }
     return orig(sub, data);
   };
-  await req("POST", "/bookings", { body: booking });
+  await req("POST", "/bookings", { body: { ...booking, token: await mkTok() } });
   await sleep(50);
   webpush.sendNotification = orig;
   const listAfter = subs.map((s) => s.endpoint);

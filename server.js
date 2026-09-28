@@ -12,8 +12,11 @@ const push = require("./push");
 const email = require("./email");
 const emailTemplates = require("./emailTemplates");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const { passwordMatches, signToken, requireAuth } = require("./auth");
 const { hashPassword, verifyPassword, signUserToken, requireUser } = require("./userauth");
+const bookingTokens = require("./bookingTokens");
+const logincodes = require("./logincodes");
 
 const app = express();
 
@@ -124,6 +127,65 @@ function userToUi(u) {
   return { id: u.id, nama: u.nama, email: u.email, telepon: u.telepon, chatCid: u.chat_cid };
 }
 
+// Decode a customer token if one is present, without requiring it. Used by the
+// public booking route so a logged-in customer's booking links to their account.
+function optionalUser(req) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return null;
+  try {
+    const p = jwt.verify(token, process.env.JWT_SECRET);
+    return p.role === "user" ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+// Find-or-create a customer account by email (passwordless). chat_cid links the
+// account to its live-chat thread.
+async function upsertUserByEmail(addr, nama) {
+  const { rows } = await pool.query("SELECT * FROM users WHERE email = $1 LIMIT 1", [addr]);
+  if (rows[0]) return rows[0];
+  const cid = crypto.randomUUID();
+  const name = (nama && String(nama).trim()) || addr.split("@")[0];
+  const { rows: created } = await pool.query(
+    "INSERT INTO users (nama, email, chat_cid) VALUES ($1,$2,$3) RETURNING *",
+    [name, addr, cid],
+  );
+  return created[0];
+}
+
+// ---- Passwordless email login (OTP) -----------------------------------------
+// POST /users/request-code { email } — email a 6-digit code. Always 200 (never
+// reveals whether the account exists). Code is delivered by email only; exposed
+// in the response solely when EXPOSE_LOGIN_CODE=1 (tests), never in production.
+app.post("/users/request-code", loginLimiter, async (req, res) => {
+  const r = await logincodes.issueCode((req.body || {}).email);
+  if (r.error) return res.status(400).json({ error: r.error });
+  const sent = await email.sendEmail({
+    to: r.email,
+    subject: `Kode masuk ${r.code} — Salia Makeup`,
+    html: `<p>Kode masuk kamu: <b style="font-size:20px;letter-spacing:3px;">${r.code}</b></p><p>Berlaku ${logincodes.TTL_MIN} menit. Abaikan email ini kalau bukan kamu yang minta.</p>`,
+  });
+  const body = { ok: true, delivered: !!sent.ok };
+  if (process.env.EXPOSE_LOGIN_CODE === "1") body.code = r.code;
+  res.json(body);
+});
+
+// POST /users/verify-code { email, code, nama? } — verify + log in (create the
+// account on first use). Returns a user token + profile.
+app.post("/users/verify-code", loginLimiter, async (req, res) => {
+  const b = req.body || {};
+  const v = await logincodes.verifyCode(b.email, b.code);
+  if (!v.ok) return res.status(401).json({ error: "wrong_or_expired_code" });
+  try {
+    const u = await upsertUserByEmail(v.email, b.nama);
+    res.json({ token: signUserToken(u), user: userToUi(u) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
 // POST /users/register { nama, email?, telepon?, password } — needs at least one
 // of email/telepon. Returns a user token + profile.
 app.post("/users/register", loginLimiter, async (req, res) => {
@@ -174,6 +236,52 @@ app.get("/users/me", requireUser, async (req, res) => {
     const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [req.user.uid]);
     if (!rows.length) return res.status(401).json({ error: "unauthorized" });
     res.json({ user: userToUi(rows[0]) });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /users/bookings (user) — the customer's own bookings, newest first. Powers
+// the homepage "download receipt" banner + booking history.
+app.get("/users/bookings", requireUser, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM bookings WHERE user_id = $1 ORDER BY created_at DESC, id DESC",
+      [req.user.uid],
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// ---- Booking magic-link tokens ----------------------------------------------
+// POST /booking-tokens (admin) — approve a date, get a single-use link.
+app.post("/booking-tokens", requireAuth, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const t = await bookingTokens.createToken({ tanggal: b.tanggal, days: b.days, label: b.label });
+    if (t.error) return res.status(400).json({ error: t.error });
+    const base = process.env.SITE_URL || "";
+    res.status(201).json({ ...t, url: base ? `${base}/booking?token=${t.token}` : `/booking?token=${t.token}` });
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /booking-tokens (admin) — recent tokens for the dashboard.
+app.get("/booking-tokens", requireAuth, async (_req, res) => {
+  try {
+    res.json(await bookingTokens.listTokens());
+  } catch (e) {
+    res.status(500).json({ error: "db_error", detail: e.message });
+  }
+});
+
+// GET /booking-token/:token (public) — the booking page validates the link.
+app.get("/booking-token/:token", async (req, res) => {
+  try {
+    res.json(await bookingTokens.checkToken(req.params.token));
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
   }
@@ -616,10 +724,28 @@ app.post("/uploads/receipt", publicLimiter, upload.single("file"), async (req, r
 //   - SINGLE (legacy): { service_id, hairdo, ... }.
 app.post("/bookings", publicLimiter, async (req, res) => {
   const b = req.body || {};
-  const baseMissing = ["nama", "telepon", "tanggal", "jam"].filter(
+  const baseMissing = ["nama", "telepon", "jam"].filter(
     (k) => !b[k] || String(b[k]).trim() === "",
   );
   if (baseMissing.length) return res.status(400).json({ error: "missing_fields", fields: baseMissing });
+
+  // Booking is gated by a single-use magic-link token; the date comes from it
+  // (bound to what the admin approved), never from the client. Consume atomically.
+  const consumed = await bookingTokens.consumeToken(b.token).catch(() => null);
+  if (!consumed) {
+    const chk = await bookingTokens.checkToken(b.token).catch(() => ({ reason: "error" }));
+    return res.status(400).json({ error: "invalid_token", reason: chk.reason || "used" });
+  }
+  const tanggal = consumed.tanggal;
+
+  // Link to the customer account when logged in; capture email for the receipt.
+  const acct = optionalUser(req);
+  const userId = acct?.uid || null;
+  let custEmail = b.email ? String(b.email).trim().toLowerCase() : null;
+  if (userId && !custEmail) {
+    try { const { rows } = await pool.query("SELECT email FROM users WHERE id = $1", [userId]); custEmail = rows[0]?.email || null; } catch {}
+  }
+  const proofUrl = b.proof_url ? String(b.proof_url).trim() : null;
 
   let areaList;
   try {
@@ -669,17 +795,19 @@ app.post("/bookings", publicLimiter, async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO bookings
          (nama, telepon, service_id, service_nama, hairdo,
-          area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          area_id, area_nama, tanggal, jam, lokasi, catatan, total, items, orang, instagram,
+          email, user_id, proof_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
        RETURNING *`,
       [
         String(b.nama).trim(), String(b.telepon).trim(),
         ins.service_id, ins.service_nama, ins.hairdo,
-        ins.area_id, ins.area_nama, b.tanggal, b.jam,
+        ins.area_id, ins.area_nama, tanggal, b.jam,
         b.lokasi ? String(b.lokasi).trim() : null,
         b.catatan ? String(b.catatan).trim() : null,
         ins.total, ins.items, ins.orang,
         b.instagram ? String(b.instagram).trim().replace(/^@/, "") : null,
+        custEmail, userId, proofUrl,
       ],
     );
     // Notify the owner's installed app. Fire-and-forget — never blocks/fails the booking.
@@ -718,11 +846,34 @@ app.patch("/bookings/:id", requireAuth, async (req, res) => {
       [status, req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "not_found" });
+    // On approval, email the customer their confirmed receipt (fire-and-forget;
+    // skipped cleanly when Resend isn't configured or there's no email).
+    if (status === "konfirmasi" && rows[0].email) sendBookingEmail(rows[0]).catch(() => {});
     res.json(rows[0]);
   } catch (e) {
     res.status(500).json({ error: "db_error", detail: e.message });
   }
 });
+
+// Build the email shape from a booking row and send the receipt/confirmation.
+async function sendBookingEmail(row) {
+  let items = [];
+  try { items = Array.isArray(row.items) ? row.items : row.items ? JSON.parse(row.items) : []; } catch {}
+  const orang = row.orang || 1;
+  const sub = items.reduce((s, i) => s + (i.base || 0) * orang, 0);
+  const areaFee = Math.max(0, (row.total || 0) - sub);
+  let dpPercent = 50;
+  try { dpPercent = (await settings.getSettings()).dpPercent; } catch {}
+  const booking = {
+    ref: `SALIA-${row.id}`, nama: row.nama, telepon: row.telepon, items, orang,
+    areaNama: row.area_nama, areaFee, tanggal: row.tanggal, jam: row.jam,
+    total: row.total, dpPercent, status: row.status,
+  };
+  const { subject, html } = emailTemplates.customerBookingEmail({ brand: "Salia Makeup", booking, dpPercent });
+  const r = await email.sendEmail({ to: row.email, subject, html });
+  console.log(r.ok ? `[email] booking SALIA-${row.id} confirmation queued` : `[email] booking SALIA-${row.id} not sent: ${r.reason || r.error || "skipped"}`);
+  return r;
+}
 
 app.delete("/bookings/:id", requireAuth, async (req, res) => {
   try {
