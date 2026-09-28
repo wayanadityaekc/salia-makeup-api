@@ -75,8 +75,8 @@ function customerBookingEmail({ brand = "Salia Makeup", booking = {}, dpPercent 
   ).join("");
 
   const subject = confirmed
-    ? `Booking ${b.ref || ""} dikonfirmasi — ${brand}`.replace(/\s+/g, " ").trim()
-    : `Booking ${b.ref || ""} diterima — ${brand}`.replace(/\s+/g, " ").trim();
+    ? `Booking ${b.ref || ""} dikonfirmasi · ${brand}`.replace(/\s+/g, " ").trim()
+    : `Booking ${b.ref || ""} diterima · ${brand}`.replace(/\s+/g, " ").trim();
 
   const heading = confirmed ? "Booking kamu dikonfirmasi 🎉" : "Terima kasih, booking kamu diterima 🤍";
   const lead = confirmed

@@ -108,7 +108,7 @@ async function sendToAll(payload) {
 function notifyNewBooking(b) {
   const extra = b.hairdo ? " + Hairdo" : "";
   const when = [b.tanggal, b.jam].filter(Boolean).join(" ");
-  const body = `${b.nama} — ${b.service_nama || "layanan"}${extra}${when ? " · " + when : ""}`;
+  const body = `${b.nama} · ${b.service_nama || "layanan"}${extra}${when ? " · " + when : ""}`;
   sendToAll({ title: "Booking baru masuk", body, tag: `booking-${b.id}`, url: "/dashboard" }).catch((e) =>
     console.error("notifyNewBooking:", e.message),
   );

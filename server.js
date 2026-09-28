@@ -164,7 +164,7 @@ app.post("/users/request-code", loginLimiter, async (req, res) => {
   if (r.error) return res.status(400).json({ error: r.error });
   const sent = await email.sendEmail({
     to: r.email,
-    subject: `Kode masuk ${r.code} — Salia Makeup`,
+    subject: `Kode masuk ${r.code} · Salia Makeup`,
     html: `<p>Kode masuk kamu: <b style="font-size:20px;letter-spacing:3px;">${r.code}</b></p><p>Berlaku ${logincodes.TTL_MIN} menit. Abaikan email ini kalau bukan kamu yang minta.</p>`,
   });
   const body = { ok: true, delivered: !!sent.ok };
@@ -298,7 +298,7 @@ app.post("/receipt/email", requireUser, async (req, res) => {
     if (!u.email) return res.json({ ok: false, skipped: true, reason: "no_email_on_account" });
     const result = await email.sendEmail({
       to: u.email,
-      subject: `Struk booking ${b.ref || ""} — Salia Makeup`.trim(),
+      subject: `Struk booking ${b.ref || ""} · Salia Makeup`.trim(),
       html: `<p>Halo ${u.nama},</p><p>Terima kasih sudah booking di Salia Makeup. Struk kamu terlampir.</p>`,
       attachment: b.pdfBase64 ? { filename: b.filename || "struk-salia.pdf", content: b.pdfBase64 } : null,
     });
