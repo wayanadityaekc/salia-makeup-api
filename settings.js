@@ -35,6 +35,14 @@ async function getSettings() {
     areas: Array.isArray(r.areas) ? r.areas : DEFAULTS.areas,
     social: { instagram: r.instagram_url || "", tiktok: r.tiktok_url || "", google: r.google_url || "" },
     whatsapp: r.whatsapp || "",
+    // Editable homepage content. Empty strings = frontend falls back to its
+    // hardcoded defaults, so nothing breaks before the owner sets anything.
+    content: {
+      logo: r.logo_url || "",
+      heroKicker: r.hero_kicker || "",
+      heroTitle: r.hero_title || "",
+      heroPhoto: r.hero_photo || "",
+    },
   };
 }
 
@@ -50,11 +58,14 @@ async function updateSettings(body) {
     ? body.areas.map((a) => ({ id: a.id, nama: a.nama, fee: Math.max(0, parseInt(a.fee, 10) || 0) }))
     : cur.areas;
   const whatsapp = body.whatsapp !== undefined ? String(body.whatsapp) : cur.whatsapp;
+  const content = { ...cur.content, ...(body.content || {}) };
 
   await pool.query(
     `UPDATE settings SET dp_percent=$1, bank_name=$2, bank_number=$3, bank_holder=$4,
-       areas=$5, instagram_url=$6, tiktok_url=$7, google_url=$8, whatsapp=$9, updated_at=NOW() WHERE id=1`,
-    [dpPercent, bank.name, bank.number, bank.holder, JSON.stringify(areas), social.instagram, social.tiktok, social.google, whatsapp],
+       areas=$5, instagram_url=$6, tiktok_url=$7, google_url=$8, whatsapp=$9,
+       logo_url=$10, hero_kicker=$11, hero_title=$12, hero_photo=$13, updated_at=NOW() WHERE id=1`,
+    [dpPercent, bank.name, bank.number, bank.holder, JSON.stringify(areas), social.instagram, social.tiktok, social.google, whatsapp,
+     content.logo || "", content.heroKicker || "", content.heroTitle || "", content.heroPhoto || ""],
   );
   return getSettings();
 }

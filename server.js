@@ -10,6 +10,7 @@ const uploads = require("./uploads");
 const settings = require("./settings");
 const push = require("./push");
 const email = require("./email");
+const emailTemplates = require("./emailTemplates");
 const crypto = require("crypto");
 const { passwordMatches, signToken, requireAuth } = require("./auth");
 const { hashPassword, verifyPassword, signUserToken, requireUser } = require("./userauth");
@@ -194,6 +195,37 @@ app.post("/receipt/email", requireUser, async (req, res) => {
       attachment: b.pdfBase64 ? { filename: b.filename || "struk-salia.pdf", content: b.pdfBase64 } : null,
     });
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: "email_error", detail: e.message });
+  }
+});
+
+// ---- Email preview / test (admin) -------------------------------------------
+// GET /email/preview — rendered customer email (sample data) for the dashboard
+// to show in an iframe before it's wired into the flow.
+app.get("/email/preview", requireAuth, async (_req, res) => {
+  try {
+    const s = await settings.getSettings().catch(() => ({ dpPercent: 50 }));
+    const { subject, html } = emailTemplates.customerBookingEmail({
+      brand: "Salia Makeup", booking: emailTemplates.SAMPLE_BOOKING, dpPercent: s.dpPercent,
+    });
+    res.json({ subject, html, emailConfigured: email.configured() });
+  } catch (e) {
+    res.status(500).json({ error: "preview_error", detail: e.message });
+  }
+});
+
+// POST /email/test { to } — send the sample email to the owner to verify it in a
+// real inbox. Skipped (not an error) until Resend is configured.
+app.post("/email/test", requireAuth, async (req, res) => {
+  const to = String((req.body || {}).to || process.env.OWNER_EMAIL || "").trim();
+  if (!to) return res.status(400).json({ error: "missing_to" });
+  try {
+    const s = await settings.getSettings().catch(() => ({ dpPercent: 50 }));
+    const { subject, html } = emailTemplates.customerBookingEmail({
+      booking: emailTemplates.SAMPLE_BOOKING, dpPercent: s.dpPercent,
+    });
+    res.json(await email.sendEmail({ to, subject, html }));
   } catch (e) {
     res.status(500).json({ error: "email_error", detail: e.message });
   }

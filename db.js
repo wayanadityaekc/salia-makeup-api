@@ -122,6 +122,12 @@ async function ensureSchema() {
   `);
   // Added after the table shipped — idempotent so existing DBs get the column.
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS whatsapp TEXT`);
+  // Editable homepage content (Sep 2026): logo + hero, changed from the dashboard
+  // with no redeploy — same live-fetch pattern as items/photos.
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS logo_url TEXT`);
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_kicker TEXT`);
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_title TEXT`);
+  await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS hero_photo TEXT`);
 
   await seedServices();
   await seedHairdoIfMissing();
